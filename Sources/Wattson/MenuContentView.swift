@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuContentView: View {
     @ObservedObject var model: DeviceModel
     var onOpenSettings: () -> Void = {}
+    var onOpenCableTest: () -> Void = {}
 
     /// Which connection cards are showing their detail rows. Keyed by the
     /// connection's stable id so a rescan does not collapse them.
@@ -205,6 +206,7 @@ struct MenuContentView: View {
     /// places to change one thing.
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
+            MenuButton(title: "Test Your Cable…", action: onOpenCableTest)
             MenuButton(title: "Settings…", trailing: "⌘,", action: onOpenSettings)
                 .keyboardShortcut(",")
             MenuButton(title: "Quit Wattson", trailing: "⌘Q") {

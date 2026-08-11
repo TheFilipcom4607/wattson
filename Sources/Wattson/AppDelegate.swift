@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private let model = DeviceModel()
     private let settings = SettingsWindowController()
+    private let cableTest = CableTestWindowController()
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -24,11 +25,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
 
         let hosting = NSHostingController(
-            rootView: MenuContentView(model: model) { [weak self] in
-                guard let self else { return }
-                self.popover.performClose(nil)
-                self.settings.show(model: self.model)
-            }
+            rootView: MenuContentView(
+                model: model,
+                onOpenSettings: { [weak self] in
+                    guard let self else { return }
+                    self.popover.performClose(nil)
+                    self.settings.show(model: self.model)
+                },
+                onOpenCableTest: { [weak self] in
+                    guard let self else { return }
+                    self.popover.performClose(nil)
+                    self.cableTest.show(model: self.model)
+                }
+            )
         )
         // Let the popover follow the panel as sections expand and collapse.
         hosting.sizingOptions = [.preferredContentSize]
@@ -62,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Test Your Cable…", action: #selector(openCableTest), keyEquivalent: "")
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(
@@ -99,6 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settings.show(model: model)
+    }
+
+    @objc private func openCableTest() {
+        cableTest.show(model: model)
     }
 
     private func updateStatusItem() {

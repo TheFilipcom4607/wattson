@@ -111,11 +111,11 @@ final class DeviceModel: ObservableObject {
             return "—"
 
         case .batteryFlow:
-            // Always signed: -10 W draining, +10 W charging. Rounding makes a
-            // resting battery land on -0, so flatten anything near zero.
+            // Always signed: -10.27 W draining, +10.27 W charging. A resting
+            // battery would otherwise land on "-0.00 W".
             guard let watts = power.batteryWatts else { return "—" }
-            if abs(watts) < 0.5 { return "0 W" }
-            return String(format: "%+.0f W", watts)
+            if abs(watts) < 0.005 { return "0.00 W" }
+            return String(format: "%+.2f W", watts)
 
         case .deviceCount:
             let count = result.deviceCount
@@ -131,11 +131,9 @@ final class DeviceModel: ObservableObject {
         }
     }
 
-    /// Whole watts. The menu bar redraws every second and is read in passing,
-    /// so hundredths there are jitter rather than information — the panel is
-    /// where the precision belongs.
+    /// Match the panel exactly: if it reads 2.34 W, so does the menu bar.
     private func format(_ watts: Double) -> String {
-        String(format: "%.0f W", watts)
+        String(format: "%.2f W", watts)
     }
 
     var symbolName: String {
