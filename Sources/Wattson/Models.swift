@@ -75,10 +75,14 @@ struct DeviceNode: Identifiable, Hashable {
         }
     }
 
-    /// Label/value pairs for a card's expanded detail. Speed and version are
-    /// deliberately absent: the card subtitle already carries them.
+    /// Label/value pairs for a card's expanded detail.
     func detailRows(includeVendor: Bool = true) -> [(label: String, value: String)] {
         var rows: [(label: String, value: String)] = []
+        // The subtitle carries the bare rate; this is the descriptive form,
+        // and the only place a Thunderbolt device's several speeds all show.
+        if !speeds.isEmpty {
+            rows.append(("Speed", speeds.joined(separator: ", ")))
+        }
         if measuredWatts == nil, let watts {
             rows.append(("Budget", String(format: "%.1f W allocated, not measured", watts)))
         }

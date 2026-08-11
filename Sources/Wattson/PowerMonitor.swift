@@ -123,6 +123,13 @@ struct PowerAllocation {
 
     var used: Double { segments.reduce(0) { $0 + $1.watts } }
     var headroom: Double? { capacity - used > 0.5 ? capacity - used : nil }
+
+    /// Whether the bar is worth drawing at all.
+    ///
+    /// On battery there is no ceiling to measure against, so a lone segment
+    /// fills the whole width and reads as "maxed out" while actually saying
+    /// nothing — and its legend just repeats the headline.
+    var isInformative: Bool { segments.count > 1 || headroom != nil }
 }
 
 /// Reads Apple's SMC power telemetry out of the IORegistry.

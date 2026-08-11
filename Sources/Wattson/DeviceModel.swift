@@ -379,7 +379,8 @@ final class DeviceModel: ObservableObject {
         var parts: [String] = []
         if let transfer = maximumTransfer { parts.append(transfer) }
         if let charging = maximumCharging {
-            parts.append(String(format: "charges at up to %.0f W", charging.watts))
+            parts.append(String(format: "charges at up to %.0f W (%.0f V / %.2f A)",
+                                charging.watts, charging.volts, charging.amps))
         }
         guard !parts.isEmpty else { return nil }
         return "This Mac's ports: " + parts.joined(separator: " · ")

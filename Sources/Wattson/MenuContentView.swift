@@ -47,8 +47,10 @@ struct MenuContentView: View {
             headline
 
             if let allocation = model.power.allocation {
-                AllocationBar(allocation: allocation)
-                AllocationLegend(allocation: allocation)
+                if allocation.isInformative {
+                    AllocationBar(allocation: allocation)
+                    AllocationLegend(allocation: allocation)
+                }
                 caption(for: allocation)
             }
 
@@ -92,7 +94,7 @@ struct MenuContentView: View {
 
     private func caption(for allocation: PowerAllocation) -> some View {
         HStack(spacing: 6) {
-            if let battery = model.power.batterySummary {
+            if let battery = batteryCaption(for: allocation) {
                 Text(battery)
             }
             Spacer()
@@ -104,6 +106,20 @@ struct MenuContentView: View {
         .monospacedDigit()
         .foregroundStyle(.tertiary)
         .lineLimit(1)
+    }
+
+    /// "Battery 80% · draining · -2.31 W"
+    ///
+    /// The flow is spelled out whenever the bar is not already carrying it —
+    /// which is exactly the case where it matters most: plugged in, but the
+    /// charger is not keeping up and the cell is still going down.
+    private func batteryCaption(for allocation: PowerAllocation) -> String? {
+        guard let summary = model.power.batterySummary else { return nil }
+        let inBar = allocation.segments.contains { $0.id == "battery" }
+        guard model.power.externalConnected, !inBar,
+              let watts = model.power.batteryWatts, abs(watts) > 0.05
+        else { return summary }
+        return summary + String(format: " · %+.2f W", watts)
     }
 
     // MARK: - Body
@@ -364,7 +380,7 @@ private struct ConnectionCard: View {
             if !connection.extraDevices.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(connection.extraDevices) { entry in
-                        DeviceLine(entry: entry)
+                        DeviceLine(entry: entry, showVendors: showVendors)
                     }
                 }
                 .padding(.top, 7)
@@ -480,6 +496,7 @@ private struct ConnectionCard: View {
 /// A device hanging below whatever names the card — a hub's downstream ports.
 private struct DeviceLine: View {
     let entry: FlatDevice
+    var showVendors = true
 
     var body: some View {
         HStack(spacing: 5) {
@@ -501,10 +518,17 @@ private struct DeviceLine: View {
                 Text(String(format: "%.1f W", watts))
                     .font(.system(size: 10))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    // Solid when the rail was actually measured, faded when it
+                    // is only the budget the port granted.
+                    .foregroundStyle(entry.node.measuredWatts != nil
+                        ? AnyShapeStyle(.secondary)
+                        : AnyShapeStyle(.tertiary))
             }
         }
         .padding(.leading, CGFloat(entry.depth) * 12 + 24)
+        // Nested devices get no expanded section of their own, so their full
+        // detail — descriptive speed, measured vs allocated, vendor — lives here.
+        .help(entry.node.detailLines(includeVendor: showVendors).joined(separator: "\n"))
     }
 }
 
@@ -528,6 +552,11 @@ private struct ProfileRow: View {
                 Text(" V").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             .monospacedDigit()
+            // The ladder is shown as volts alone to keep it to one line; the
+            // current and wattage of each step are a hover away.
+            .help(profiles
+                .map { String(format: "%.0f V · %.2f A · %.0f W", $0.volts, $0.amps, $0.watts) }
+                .joined(separator: "\n"))
         }
     }
 }
