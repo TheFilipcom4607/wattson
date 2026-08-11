@@ -513,11 +513,16 @@ private struct DeviceLine: View {
             Text(entry.node.name)
                 .font(.system(size: 11))
                 .lineLimit(1)
-            if let link = entry.node.linkSummary {
-                Text(link)
+            // Vendor and speed sit inline: nested devices have no expandable
+            // section of their own, so hiding these on hover made them
+            // effectively invisible for a dock full of children.
+            if let trailing = [entry.node.linkSummary, showVendors ? entry.node.vendor : nil]
+                .compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
+                Text(trailing)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             Spacer(minLength: 4)
             if let watts = entry.node.measuredWatts ?? entry.node.watts {

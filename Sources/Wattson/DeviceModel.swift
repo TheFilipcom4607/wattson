@@ -353,7 +353,10 @@ final class DeviceModel: ObservableObject {
                 .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }
         if let naming {
-            return [naming.typeLabel, naming.linkSummary]
+            // Vendor rides along on the card's second line rather than living
+            // only in the expanded rows — it is the fastest way to tell two
+            // identically-named devices apart.
+            return [naming.typeLabel, naming.linkSummary, showVendors ? naming.vendor : nil]
                 .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }
         return port.describesCable ? port.linkSummary : nil

@@ -109,26 +109,63 @@ enum Scanner {
         }
         // Plenty of hubs ship with iManufacturer = 0 and no vendor string at all.
         if let id = (properties["idVendor"] as? NSNumber)?.intValue {
-            if let known = knownVendors[id] {
-                return "\(known) (0x\(String(format: "%04X", id)))"
-            }
+            // The hex was appended to known names too, which just added noise
+            // to the common case. It is now the fallback, not a suffix.
+            if let known = knownVendors[id] { return known }
             return String(format: "0x%04X", id)
         }
         return nil
     }
 
-    /// The USB-IF list is huge; these are the ones that turn up in docks,
-    /// enclosures and cheap hubs, where the vendor string is usually missing.
+    /// Thunderbolt entries often carry only a hex vendor id string.
+    static func vendorName(forHex raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        let digits = trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X")
+            ? String(trimmed.dropFirst(2))
+            : trimmed
+        guard let id = Int(digits, radix: 16), let known = knownVendors[id] else { return raw }
+        return known
+    }
+
+    /// The USB-IF list runs to thousands of entries and is not redistributable
+    /// as a whole, so this is the working subset: the vendors that actually turn
+    /// up in docks, enclosures, hubs and peripherals, where the device's own
+    /// vendor string is so often blank.
     private static let knownVendors: [Int: String] = [
-        0x03F0: "HP", 0x0409: "NEC", 0x0424: "Microchip", 0x0451: "Texas Instruments",
-        0x045E: "Microsoft", 0x046D: "Logitech", 0x04B4: "Cypress", 0x04E8: "Samsung",
-        0x05AC: "Apple", 0x058F: "Alcor Micro", 0x05E3: "Genesys Logic", 0x067B: "Prolific",
-        0x0781: "SanDisk", 0x07B3: "Plustek", 0x0951: "Kingston", 0x090C: "Silicon Motion",
-        0x0BC2: "Seagate", 0x0BDA: "Realtek", 0x0C45: "Microdia", 0x1058: "Western Digital",
-        0x125F: "ADATA", 0x13FE: "Kingston", 0x152D: "JMicron", 0x1509: "FIC",
-        0x174C: "ASMedia", 0x17EF: "Lenovo", 0x1A40: "Terminus Technology",
-        0x1B1C: "Corsair", 0x1D6B: "Linux Foundation", 0x2109: "VIA Labs",
-        0x2188: "Sonix", 0x413C: "Dell", 0x43E: "LG", 0x8087: "Intel"
+        0x03EB: "Atmel", 0x03F0: "HP", 0x0403: "FTDI", 0x0409: "NEC",
+        0x0424: "Microchip", 0x043E: "LG", 0x0451: "Texas Instruments",
+        0x045E: "Microsoft", 0x0461: "Primax", 0x046D: "Logitech",
+        0x0471: "Philips", 0x0483: "STMicroelectronics", 0x04A9: "Canon",
+        0x04B3: "IBM", 0x04B4: "Cypress", 0x04B8: "Epson", 0x04CA: "Lite-On",
+        0x04D8: "Microchip", 0x04DD: "Sharp", 0x04E8: "Samsung",
+        0x04F2: "Chicony", 0x04F3: "Elan", 0x04F9: "Brother",
+        0x050D: "Belkin", 0x051D: "APC", 0x054C: "Sony",
+        0x055D: "Samsung Electro-Mechanics", 0x056A: "Wacom", 0x056E: "Elecom",
+        0x057C: "AVM", 0x058F: "Alcor Micro", 0x059B: "Iomega",
+        0x05A9: "OmniVision", 0x05AC: "Apple", 0x05C6: "Qualcomm",
+        0x05DC: "Lexar", 0x05E3: "Genesys Logic", 0x0644: "TEAC",
+        0x066F: "SigmaTel", 0x067B: "Prolific", 0x0699: "Tektronix",
+        0x06CB: "Synaptics", 0x0718: "Imation", 0x077B: "Linksys",
+        0x0781: "SanDisk", 0x07B3: "Plustek", 0x07CA: "AVerMedia",
+        0x07D1: "D-Link", 0x0846: "NetGear", 0x08BB: "Texas Instruments",
+        0x08E4: "Pioneer", 0x090C: "Silicon Motion", 0x0930: "Toshiba",
+        0x093A: "PixArt", 0x0951: "Kingston", 0x0955: "NVIDIA",
+        0x09DA: "A4Tech", 0x0A12: "Cambridge Silicon Radio", 0x0A5C: "Broadcom",
+        0x0B05: "ASUS", 0x0B0E: "Jabra", 0x0B95: "ASIX", 0x0BB4: "HTC",
+        0x0BC2: "Seagate", 0x0BDA: "Realtek", 0x0C45: "Microdia",
+        0x0CF3: "Qualcomm Atheros", 0x0D8C: "C-Media", 0x0E0F: "VMware",
+        0x0E8D: "MediaTek", 0x1004: "LG", 0x1058: "Western Digital",
+        0x10C4: "Silicon Labs", 0x125F: "ADATA", 0x1235: "Focusrite",
+        0x12D1: "Huawei", 0x1307: "Transcend", 0x13FE: "Kingston",
+        0x1462: "MSI", 0x1509: "FIC", 0x152D: "JMicron", 0x1532: "Razer",
+        0x1604: "Tascam", 0x174C: "ASMedia", 0x17E9: "DisplayLink",
+        0x17EF: "Lenovo", 0x18A5: "Verbatim", 0x18D1: "Google",
+        0x1A40: "Terminus Technology", 0x1A86: "QinHeng", 0x1B1C: "Corsair",
+        0x1BCF: "Sunplus", 0x1D6B: "Linux Foundation", 0x1F75: "Innostor",
+        0x2001: "D-Link", 0x20C2: "Diodes", 0x2109: "VIA Labs",
+        0x2188: "Sonix", 0x2207: "Rockchip", 0x2357: "TP-Link",
+        0x2717: "Xiaomi", 0x28DE: "Valve", 0x2E8A: "Raspberry Pi",
+        0x2E99: "Anker", 0x2ECC: "Cypress", 0x413C: "Dell", 0x8087: "Intel"
     ]
 
     /// What the device actually is, inferred from the drivers macOS attached to it.
@@ -219,7 +256,8 @@ enum Scanner {
 
             var node = DeviceNode(name: name, kind: .thunderbolt)
             node.id = "\(path)-\(index)"
-            node.vendor = (item["vendor_name_key"] as? String) ?? (item["vendor_id_key"] as? String)
+            node.vendor = (item["vendor_name_key"] as? String)
+                ?? (item["vendor_id_key"] as? String).map(vendorName(forHex:))
 
             var speeds: [(String, Double)] = []
             for (key, value) in item where key.hasSuffix("_tag") {
