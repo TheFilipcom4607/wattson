@@ -12,6 +12,77 @@ struct PowerOption: Identifiable, Hashable {
     var watts: Double { milliwatts / 1000 }
 }
 
+/// What the cable's own e-marker chip reports over SOP'.
+///
+/// The chip is interrogated during PD negotiation — a cable with a free end is
+/// never asked, so this is nil until something at the far end gives the Mac a
+/// reason to talk to it.
+///
+/// How much arrives depends on the Mac. Machines with an `AppleTCController`
+/// publish the raw Discover Identity VDOs, which decode to the cable's speed,
+/// current and voltage ratings. `AppleHPM` machines publish only the node's
+/// existence — which still proves there *is* an e-marker, and that is worth
+/// knowing on its own.
+struct CableEMarker: Hashable {
+    var specificationRevision: Int?
+    var vendorID: Int?
+    var productID: Int?
+    /// 3 = passive cable, 4 = active cable, 6 = VCONN-powered device.
+    var productType: Int?
+    /// Raw Discover Identity VDOs, empty where the platform withholds them.
+    var vdos: [UInt32] = []
+
+    /// The Cable VDO is the last one in the Discover Identity response.
+    private var cableVDO: UInt32? {
+        guard let last = vdos.last, productType == 3 || productType == 4 else { return nil }
+        return last
+    }
+
+    /// Bits 2:0 of the Cable VDO.
+    var usbSpeed: String? {
+        guard let vdo = cableVDO else { return nil }
+        switch vdo & 0b111 {
+        case 0b000: return "USB 2.0 — 480 Mbps"
+        case 0b001: return "USB 3.2 Gen 1 — 5 Gbps"
+        case 0b010: return "USB 3.2 Gen 2 — 10 Gbps"
+        case 0b011: return "USB4 Gen 2×2 — 20 Gbps"
+        case 0b100, 0b101: return "USB4 Gen 3 — 40 Gbps"
+        default: return nil
+        }
+    }
+
+    /// Bits 6:5. Only 3 A and 5 A are defined; anything else is "unstated".
+    var maxAmps: Double? {
+        guard let vdo = cableVDO else { return nil }
+        switch (vdo >> 5) & 0b11 {
+        case 0b01: return 3
+        case 0b10: return 5
+        default: return nil
+        }
+    }
+
+    /// Bits 9:8. Above 20 V is Extended Power Range.
+    var maxVolts: Double? {
+        guard let vdo = cableVDO else { return nil }
+        switch (vdo >> 8) & 0b11 {
+        case 0b00: return 20
+        case 0b01: return 30
+        case 0b10: return 40
+        default: return 50
+        }
+    }
+
+    var maxWatts: Double? {
+        guard let amps = maxAmps, let volts = maxVolts else { return nil }
+        return amps * volts
+    }
+
+    var isActive: Bool { productType == 4 }
+
+    /// True when the chip was found but the Mac declined to publish what it said.
+    var contentsWithheld: Bool { vdos.isEmpty }
+}
+
 /// The state of one physical port on the Mac.
 struct PortInfo: Identifiable, Hashable {
     /// Port numbers repeat across types — MagSafe is also port 1 — so the kind
@@ -47,16 +118,8 @@ struct PortInfo: Identifiable, Hashable {
     var pins: [String: Int] = [:]
     var powerOptions: [PowerOption] = []
     var negotiated: PowerOption?
-
-    /// Both SuperSpeed pairs carried through the cable.
-    var hasSuperSpeedLanes: Bool {
-        (pins["rx2"] ?? 0) != 0 && (pins["tx2"] ?? 0) != 0
-    }
-
-    /// The sideband pins DisplayPort alt mode and Thunderbolt need.
-    var hasSidebandPins: Bool {
-        (pins["sbu1"] ?? 0) != 0 || (pins["sbu2"] ?? 0) != 0
-    }
+    /// The cable's own chip, when the hardware has had reason to interrogate it.
+    var emarker: CableEMarker?
 
     /// >3 A is only legal over a cable whose e-marker declares 5 A.
     var isFiveAmpRated: Bool {
@@ -86,29 +149,28 @@ struct PortInfo: Identifiable, Hashable {
     var describesCable: Bool { kind == .usbC }
 
     /// How the cable itself is built.
-    var cableWiringSummary: String {
-        if isOpticalCable { return "Optical · \(wiringDetail)" }
-        let kind = isActiveCable ? "Active" : "Passive"
-        return "\(kind) · \(wiringDetail)"
-    }
-
-    /// The best this wiring could carry.
     ///
-    /// Inferred from lane wiring, not read from the cable's e-marker: macOS does
-    /// not publish the cable's identity response. What it actually negotiates is
-    /// only known once a data device runs through it.
-    var cableCapability: String {
-        if hasSuperSpeedLanes {
-            return hasSidebandPins ? "Thunderbolt / USB4 capable" : "USB 3.x, no DisplayPort"
+    /// This used to append a lane-wiring verdict derived from `pins`, which was
+    /// wrong: the pin map is stale per-port state that stays behind when the
+    /// cable is moved. The same cable read "USB 3.x" in one port and "USB 2.0
+    /// + power only" in the other. Only what the hardware states outright is
+    /// reported now.
+    var cableWiringSummary: String {
+        var parts = [isOpticalCable ? "Optical" : (isActiveCable ? "Active" : "Passive")]
+        if let emarker {
+            parts.append(emarker.contentsWithheld
+                ? "has an e-marker"
+                : "e-marker read")
         }
-        return "USB 2.0 (480 Mbps) + power only"
+        return parts.joined(separator: " · ")
     }
 
-    /// Which physical conductors run through the cable.
-    var wiringDetail: String {
-        hasSuperSpeedLanes
-            ? (hasSidebandPins ? "4 SuperSpeed lanes + SBU" : "4 SuperSpeed lanes, no SBU")
-            : "USB 2.0 pair only"
+    /// The fastest thing known to have crossed this cable, or what its chip
+    /// claims where the Mac publishes that.
+    var cableCapability: String {
+        if let speed = emarker?.usbSpeed { return speed }
+        if let best = TransportName.best(transportsActive.filter { $0 != "CC" }) { return best }
+        return "Not established"
     }
 
     /// What the cable is certified to carry.
@@ -117,6 +179,9 @@ struct PortInfo: Identifiable, Hashable {
     /// 3 A proves a 5 A e-marker, but with nothing feeding us there is nothing
     /// to infer from.
     var currentRating: String {
+        if let watts = emarker?.maxWatts, let amps = emarker?.maxAmps {
+            return String(format: "%.0f A / %.0f W — from the cable's chip", amps, watts)
+        }
         if isFiveAmpRated { return "e-marked for 5 A (100 W+)" }
         // Sourcing tells us nothing about the e-marker: the Mac caps its own
         // output at 3 A regardless of what the cable could take. Saying "no
@@ -210,6 +275,7 @@ enum PortMonitor {
             }
 
             collectPowerDelivery(under: service, into: &port, depth: 0)
+            collectEMarker(under: service, into: &port, depth: 0)
             ports.append(port)
         }
 
@@ -237,6 +303,54 @@ enum PortMonitor {
             }
             collectPowerDelivery(under: child, into: &port, depth: depth + 1)
         }
+    }
+
+    /// Hunts for the cable's SOP' node, which hangs under the port's CC child.
+    ///
+    /// Its mere presence is the finding on most Macs: the node only exists once
+    /// the hardware has actually talked to a chip in the cable. Where the
+    /// platform also publishes the Discover Identity VDOs, those are decoded.
+    private static func collectEMarker(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
+        guard depth < 4 else { return }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        while case let child = IOIteratorNext(iterator), child != 0 {
+            defer { IOObjectRelease(child) }
+
+            if IOObjectConformsTo(child, "IOPortTransportComponentCCUSBPDSOPp") != 0,
+               let properties = properties(of: child) {
+                var emarker = CableEMarker()
+                emarker.specificationRevision = int(properties["Specification Revision"])
+                emarker.vendorID = int(properties["Vendor ID"])
+                emarker.productID = int(properties["Product ID"])
+                emarker.productType = int(properties["Product Type"])
+                emarker.vdos = vdos(from: properties["VDOs"])
+                port.emarker = emarker
+                return
+            }
+            collectEMarker(under: child, into: &port, depth: depth + 1)
+            if port.emarker != nil { return }
+        }
+    }
+
+    /// VDOs arrive as an array of four-byte blobs, most significant byte first.
+    private static func vdos(from raw: Any?) -> [UInt32] {
+        guard let entries = raw as? [Any] else { return [] }
+        return entries.compactMap { entry in
+            if let number = entry as? NSNumber { return number.uint32Value }
+            guard let data = entry as? Data, data.count >= 4 else { return nil }
+            return data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        }
+    }
+
+    private static func int(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber { return number.intValue }
+        if let data = value as? Data {
+            return data.reduce(0) { ($0 << 8) | Int($1) }
+        }
+        return nil
     }
 
     private static func option(_ raw: [String: Any]) -> PowerOption? {

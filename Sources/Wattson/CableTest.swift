@@ -22,7 +22,8 @@ struct CableEvidence {
     var bestContract: PowerOption?
     /// Highest power the Mac has pushed out through it.
     var maxSourcedWatts: Double = 0
-    var laneWiring: [String: Int] = [:]
+    /// What the cable's own chip said, once anything has made the Mac ask.
+    var emarker: CableEMarker?
 
     mutating func absorb(_ port: PortInfo) {
         isConnected = port.isConnected
@@ -30,7 +31,7 @@ struct CableEvidence {
         portID = port.id
         isActiveCable = port.isActiveCable
         isOpticalCable = port.isOpticalCable
-        laneWiring = port.pins
+        if let found = port.emarker { emarker = found }
         transportsSeen.formUnion(port.transportsActive.filter { $0 != "CC" })
         if let contract = port.negotiated,
            contract.watts > (bestContract?.watts ?? 0) {
@@ -87,6 +88,13 @@ enum CableAnalysis {
     /// can easily be faster than the device on the end — plugging a phone into
     /// a 40 Gbps cable proves only 480 Mbps. So this is always a floor.
     private static func dataFinding(_ evidence: CableEvidence) -> CableFinding {
+        // The chip's own claim beats anything inferred, when we can see it.
+        if let speed = evidence.emarker?.usbSpeed {
+            return CableFinding(
+                id: "data", label: "Speed", value: speed,
+                confidence: .proven
+            )
+        }
         if evidence.transportsSeen.contains("CIO") {
             return CableFinding(
                 id: "data", label: "Data", value: "Thunderbolt / USB4 — 40 Gbps",
@@ -123,6 +131,13 @@ enum CableAnalysis {
     /// a 240 W cable. The Mac sourcing power proves nothing — it caps its own
     /// output at 3 A no matter what the cable could take.
     private static func powerFinding(_ evidence: CableEvidence) -> CableFinding {
+        if let watts = evidence.emarker?.maxWatts, let volts = evidence.emarker?.maxVolts {
+            return CableFinding(
+                id: "power", label: "Power",
+                value: String(format: "%.0f W — rated to %.0f V", watts, volts),
+                confidence: .proven
+            )
+        }
         guard let contract = evidence.bestContract else {
             return CableFinding(
                 id: "power", label: "Power", value: "Nothing negotiated yet",
@@ -181,9 +196,38 @@ enum CableAnalysis {
     /// The one thing the registry does state outright about the cable itself.
     private static func buildFinding(_ evidence: CableEvidence) -> CableFinding {
         let kind = evidence.isOpticalCable ? "Optical"
-            : evidence.isActiveCable ? "Active (has its own signal chip)"
-            : "Passive"
+            : (evidence.isActiveCable || evidence.emarker?.isActive == true)
+                ? "Active — has its own signal chip"
+                : "Passive"
         return CableFinding(id: "build", label: "Build", value: kind, confidence: .proven)
+    }
+
+    /// Whether the cable carries an identity chip at all.
+    ///
+    /// Presence alone is informative: USB-C requires an e-marker before a cable
+    /// may carry 5 A, or run USB4 and Thunderbolt. A cable without one is
+    /// limited to 3 A and USB 2.0 or 3.x speeds by definition.
+    private static func chipFinding(_ evidence: CableEvidence) -> CableFinding {
+        guard let emarker = evidence.emarker else {
+            return CableFinding(
+                id: "chip", label: "Chip", value: "Not interrogated yet",
+                confidence: .untested,
+                hint: "The chip is only read during a power negotiation. Attach a charger to the far end."
+            )
+        }
+        if emarker.contentsWithheld {
+            return CableFinding(
+                id: "chip", label: "Chip", value: "Present — contents not published by this Mac",
+                confidence: .proven,
+                hint: "This Mac reports that the cable has an e-marker but not what it says, so speed and wattage have to be established by negotiation instead."
+            )
+        }
+        let vendor = emarker.vendorID.map { String(format: "VID 0x%04X", $0) }
+        return CableFinding(
+            id: "chip", label: "Chip",
+            value: ["Present, read in full", vendor].compactMap { $0 }.joined(separator: " · "),
+            confidence: .proven
+        )
     }
 
     // MARK: - Verdict
@@ -202,7 +246,7 @@ enum CableAnalysis {
 
         let data = dataFinding(evidence)
         let power = powerFinding(evidence)
-        let findings = [data, power, videoFinding(evidence), buildFinding(evidence)]
+        let findings = [data, power, videoFinding(evidence), chipFinding(evidence), buildFinding(evidence)]
 
         let provedData = data.confidence != .untested
         let provedPower = power.confidence != .untested
@@ -219,10 +263,19 @@ enum CableAnalysis {
 
     /// The best guess, stated as a class of cable.
     private static func headline(_ evidence: CableEvidence) -> String {
+        if let speed = evidence.emarker?.usbSpeed {
+            return speed.components(separatedBy: " — ").first ?? speed
+        }
         if evidence.transportsSeen.contains("CIO") { return "Thunderbolt / USB4" }
         if evidence.transportsSeen.contains("USB3") { return "USB 3.x" }
         if evidence.transportsSeen.contains("USB2") { return "USB 2.0" }
+        // A 5 A contract is only legal over an e-marked cable, so this is a
+        // real classification rather than a shrug.
+        if let contract = evidence.bestContract, contract.milliamps > 3000 {
+            return "100 W cable"
+        }
         if evidence.bestContract != nil { return "Charging cable" }
+        if evidence.emarker != nil { return "E-marked cable" }
         return "Cable detected"
     }
 

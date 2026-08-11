@@ -482,7 +482,11 @@ private struct ConnectionCard: View {
                 if port.carriesData {
                     rows.append(("Link now", port.activeSummary))
                 }
-                rows.append(("Cable max", port.cableCapability))
+                // "Cable max" claimed a ceiling that is only knowable when the
+                // cable's own chip is readable. Otherwise this is a floor: the
+                // fastest thing seen so far, which may be the device's limit.
+                rows.append((port.emarker?.usbSpeed != nil ? "Rated" : "Fastest seen",
+                             port.cableCapability))
                 rows.append(("Cable", port.cableWiringSummary))
                 rows.append(("Current", port.currentRating))
             }

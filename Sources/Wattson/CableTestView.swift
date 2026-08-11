@@ -92,10 +92,10 @@ struct CableTestView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
             }
 
-            // The one thing software genuinely cannot do, said plainly rather
-            // than dressed up as a reading.
+            // Says where the numbers come from without contradicting the Chip
+            // row, which reports per-Mac whether the e-marker could be read.
             Label(
-                "macOS does not expose a cable's e-marker, so its printed rating cannot be read. Everything above was measured, not looked up.",
+                "Nothing here is read off the cable's printing. Every row is either negotiated by the hardware or reported by the cable's own chip.",
                 systemImage: "info.circle"
             )
             .font(.system(size: 10))
