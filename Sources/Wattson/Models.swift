@@ -49,10 +49,13 @@ struct DeviceNode: Identifiable, Hashable {
         [typeLabel, version].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
     }
 
-    /// "USB 2.1 · 480 Mbps" — short enough for a card subtitle.
+    /// "480 Mbps" — the negotiated rate, which is the number people compare.
+    ///
+    /// The bcdUSB version used to ride alongside it, but "USB 2.01 · 480 Mbps"
+    /// states one fact twice and cost the width that pushed vendor names off
+    /// the end of the row. Version moved to the expanded rows.
     var linkSummary: String? {
-        [version, speedMbps.map(SpeedFormat.humanRate)]
-            .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
+        speedMbps.map(SpeedFormat.humanRate)
     }
 
     var symbolName: String {
@@ -82,6 +85,9 @@ struct DeviceNode: Identifiable, Hashable {
         // and the only place a Thunderbolt device's several speeds all show.
         if !speeds.isEmpty {
             rows.append(("Speed", speeds.joined(separator: ", ")))
+        }
+        if let version {
+            rows.append(("Version", version))
         }
         if measuredWatts == nil, let watts {
             rows.append(("Budget", String(format: "%.1f W allocated, not measured", watts)))

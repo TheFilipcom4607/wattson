@@ -380,12 +380,14 @@ private struct ConnectionCard: View {
                 .buttonStyle(.plain)
 
             if !connection.extraDevices.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
+                // No spacing between rows: the tree guides are drawn per row
+                // and have to meet to read as continuous lines.
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(connection.extraDevices) { entry in
                         DeviceLine(entry: entry, showVendors: showVendors)
                     }
                 }
-                .padding(.top, 7)
+                .padding(.top, 6)
             }
 
             if isExpanded, !detailRows.isEmpty || !connection.profiles.isEmpty {
@@ -505,41 +507,61 @@ private struct DeviceLine: View {
     var showVendors = true
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(alignment: .top, spacing: 0) {
+            // One thin rule per level of nesting. Indentation alone stopped
+            // being legible three levels into a hub-behind-a-hub.
+            ForEach(0..<entry.depth, id: \.self) { _ in
+                Rectangle()
+                    .fill(.quaternary)
+                    .frame(width: 1)
+                    .padding(.leading, 4)
+                    .padding(.trailing, 8)
+            }
+
             Image(systemName: entry.node.symbolName)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
-                .frame(width: 12)
-            Text(entry.node.name)
-                .font(.system(size: 11))
-                .lineLimit(1)
-            // Vendor and speed sit inline: nested devices have no expandable
-            // section of their own, so hiding these on hover made them
-            // effectively invisible for a dock full of children.
-            if let trailing = [entry.node.linkSummary, showVendors ? entry.node.vendor : nil]
-                .compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
-                Text(trailing)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            Spacer(minLength: 4)
-            if let watts = entry.node.measuredWatts ?? entry.node.watts {
-                Text(String(format: "%.1f W", watts))
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    // Solid when the rail was actually measured, faded when it
-                    // is only the budget the port granted.
-                    .foregroundStyle(entry.node.measuredWatts != nil
-                        ? AnyShapeStyle(.secondary)
-                        : AnyShapeStyle(.tertiary))
+                .frame(width: 13)
+                .padding(.top, 2)
+                .padding(.trailing, 6)
+
+            // Name on its own line, everything else beneath it. One line for
+            // all of it meant the vendor was always the part that got cut.
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Text(entry.node.name)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let watts = entry.node.measuredWatts ?? entry.node.watts {
+                        Text(String(format: "%.1f W", watts))
+                            .font(.system(size: 10))
+                            .monospacedDigit()
+                            // Solid when the rail was actually measured, faded
+                            // when it is only the budget the port granted.
+                            .foregroundStyle(entry.node.measuredWatts != nil
+                                ? AnyShapeStyle(.secondary)
+                                : AnyShapeStyle(.tertiary))
+                    }
+                }
+                if let meta {
+                    Text(meta)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
         }
-        .padding(.leading, CGFloat(entry.depth) * 12 + 24)
-        // Nested devices get no expanded section of their own, so their full
-        // detail — descriptive speed, measured vs allocated, vendor — lives here.
+        .padding(.vertical, 3)
         .help(entry.node.detailLines(includeVendor: showVendors).joined(separator: "\n"))
+    }
+
+    private var meta: String? {
+        [entry.node.typeLabel, entry.node.linkSummary, showVendors ? entry.node.vendor : nil]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+            .nilIfEmpty
     }
 }
 
