@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macospd}",
+            "name": "Debug Wattson",
+            "target": "Wattson",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Wattson"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macospd}",
+            "name": "Release Wattson",
+            "target": "Wattson",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Wattson"
+        }
+    ]
+}

@@ -1,0 +1,16 @@
+# Swift Package Manager
+.build/
+.build-x86/
+.swiftpm/
+Package.resolved
+
+# Assembled app bundle and icon staging
+build/
+
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
