@@ -12,5 +12,8 @@ DerivedData/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 
+# Editor config
+.vscode/
+
 # macOS
 .DS_Store
