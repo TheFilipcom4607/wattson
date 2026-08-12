@@ -58,10 +58,18 @@ struct DeviceNode: Identifiable, Hashable {
         speedMbps.map(SpeedFormat.humanRate)
     }
 
+    /// Also the card header's icon, via `Connection.symbol` — a change here
+    /// shows up in both places.
+    ///
+    /// The tree rows ask for `.symbolVariant(.fill)` on top of this, which
+    /// upgrades most of the table on its own. The two spelled out below are the
+    /// ones it cannot help with: the hub's fill is infixed as `filled` rather
+    /// than suffixed, and `airpodspro` is too detailed to survive at this size
+    /// in any variant.
     var symbolName: String {
         if kind == .thunderbolt { return "bolt.fill" }
         switch typeLabel {
-        case "Hub": return "point.3.connected.trianglepath.dotted"
+        case "Hub": return "point.3.filled.connected.trianglepath.dotted"
         case "Storage": return "externaldrive.fill"
         case "Ethernet": return "cable.connector.horizontal"
         case "Display": return "display"
@@ -73,7 +81,7 @@ struct DeviceNode: Identifiable, Hashable {
         case "iPhone": return "iphone"
         case "iPad": return "ipad"
         case "Apple Watch": return "applewatch"
-        case "AirPods": return "airpodspro"
+        case "AirPods": return "headphones"
         default: return "cable.connector"
         }
     }

@@ -518,12 +518,17 @@ private struct DeviceLine: View {
                     .padding(.trailing, 8)
             }
 
+            // Legibility here is a function of ink, not area: 9 pt at .regular
+            // and .tertiary left the hairline glyphs as smudges. Filled, heavier
+            // and one contrast step up, in the same 19 pt column as before — the
+            // hierarchy against the name is carried by colour, not size.
             Image(systemName: entry.node.symbolName)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .frame(width: 13)
-                .padding(.top, 2)
-                .padding(.trailing, 6)
+                .font(.system(size: 11, weight: .medium))
+                .symbolVariant(.fill)
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+                .padding(.top, 1)
+                .padding(.trailing, 5)
 
             // Name on its own line, everything else beneath it. One line for
             // all of it meant the vendor was always the part that got cut.
