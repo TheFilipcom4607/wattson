@@ -6,10 +6,10 @@ is on the other end of each USB-C cable.
 Reads the SMC and the IORegistry directly — `system_profiler SPUSBDataType` returns
 an empty list on recent macOS, so it cannot be relied on.
 
-<img src="docs/panel.png" width="420" alt="The Wattson panel: live wattage, a stacked power allocation bar, and one card per physical connection with a USB-C hub expanded into its device tree.">
+<img src="docs/panel.png" width="420" alt="The Wattson panel: live wattage, a stacked power allocation bar split between the Mac, its accessories and the battery, and one card per physical connection, each expanded into the tree of devices attached to it.">
 
-Above: charging at 9.17 W over USB-C while a hub on the other port draws 3.09 W,
-with the hub's tree of devices below it.
+Above: charging at 19.74 W through a dock on the rear port, while a hub on the
+front port draws 2.89 W, each with its tree of devices below it.
 
 ## What it shows
 
