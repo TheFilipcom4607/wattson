@@ -33,6 +33,18 @@ front port draws 2.89 W, each with its tree of devices below it.
   pulled out — off by default, in Settings.
 - **Search**, once the tree is long enough to need it.
 
+<table>
+<tr>
+<td valign="top"><img src="docs/cable-detail.png" width="330" alt="A connection card expanded: the PD contract at 20 V / 4.80 A, what the link is carrying now, how the cable is wired and what it is e-marked for, then the device's own speed, version, vendor and VID/PID."></td>
+<td valign="top"><img src="docs/inspector.png" width="330" alt="A single device in the tree expanded into sections: Power showing 288 mA at 5 V, Link showing Super Speed, Identity showing vendor, VID/PID and serial, and History."></td>
+</tr>
+</table>
+
+Left: a card expanded onto the cable and the contract carrying the power. This
+dock reports no serial, so the panel says its history follows the port rather
+than the device, instead of implying one it cannot stand behind. Right: a single
+device expanded onto its own power, link, identity and history.
+
 ## Building
 
 ```bash
