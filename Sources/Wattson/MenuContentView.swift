@@ -503,13 +503,18 @@ private struct ConnectionCard: View {
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
+                // The mark leads the name because it is part of the name: this
+                // is an Apple 61W USB-C Power Adapter, not a 61W USB-C Power
+                // Adapter that happens to be Apple.
                 HStack(spacing: 4) {
+                    if connection.isApple {
+                        Image(systemName: "apple.logo")
+                            .font(.system(size: 10))
+                            .baselineOffset(-1)
+                    }
                     Text(connection.title)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    if connection.isApple {
-                        Image(systemName: "apple.logo").font(.system(size: 9))
-                    }
                 }
                 Text(connection.subtitle)
                     .font(.system(size: 11))
