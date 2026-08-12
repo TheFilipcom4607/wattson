@@ -34,13 +34,13 @@ and a dock's tree of devices below it.
   pulled out — off by default, in Settings.
 - **Search**, once the tree is long enough to need it.
 
-<img src="docs/inspector.png" width="420" alt="A single device in the tree expanded in place into sections: Power showing 288 mA at 5 V, Link showing Super Speed at 5 Gbps, Identity showing vendor, VID/PID and serial number, and History.">
+<img src="docs/inspector.png" width="440" alt="A card reader in the tree expanded in place into sections: Power showing 896 mA at 5 V, Link showing Super Speed at 5 Gbps, Identity showing vendor, VID/PID and serial number, Volumes showing the mounted SD card with its free space and buttons to reveal it in Finder or eject it, and History showing when it was last connected and disconnected.">
 
 Clicking a device in the tree expands it where it sits: what the bus granted it,
-how fast the link actually came up, who made it and what its serial is, and when
-it last appeared. Where a device reports no serial — plenty of hubs and card
-readers do not — the panel says its history follows the port rather than the
-device, instead of implying one it cannot stand behind.
+how fast the link actually came up, who made it and what its serial is, anything
+it has mounted, and when it last came and went. Where a device reports no serial
+— plenty of hubs do not — the panel says its history follows the port rather
+than the device, instead of implying one it cannot stand behind.
 
 ## Building
 
