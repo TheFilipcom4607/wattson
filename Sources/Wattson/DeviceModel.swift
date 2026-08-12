@@ -485,19 +485,22 @@ final class DeviceModel: ObservableObject {
         let role: Connection.Role = isSource ? .source : (port.isSourcing ? .sink : .idle)
         // A single device names its own card; with none or several, the port does.
         let naming = devices.count == 1 ? devices.first : nil
+        // And with nothing plugged in but the charger, the charger names it —
+        // "35W USB-C Power Adapter" is what that card is about, and the port it
+        // arrived on is the supporting detail.
+        let adapterName = naming == nil && role == .source ? power.adapterName : nil
 
         var connection = Connection(
             id: port.id,
-            title: naming?.name ?? port.name,
+            title: naming?.name ?? adapterName ?? port.name,
             subtitle: "",
             symbol: naming?.symbolName ?? (isSource ? "powerplug.fill" : "cable.connector")
         )
-        // A charger names itself, so the card for the cable it arrives on can
-        // wear the same mark a device does — but only when the charger is what
-        // the card is about. A third-party dock that happens to be fed by an
-        // Apple brick must not end up with an Apple logo against its own name.
+        // The mark belongs to whatever names the card. A port is not Apple, a
+        // charger is — and a third-party dock fed by an Apple brick must not
+        // end up with an Apple logo against its own name.
         connection.isApple = naming?.isApple
-            ?? (port.kind == .magSafe || (role == .source && power.isAppleAdapter))
+            ?? (port.kind == .magSafe || (adapterName != nil && power.isAppleAdapter))
         connection.role = role
         connection.port = port
         connection.devices = devices
@@ -513,8 +516,12 @@ final class DeviceModel: ObservableObject {
             connection.liveWatts = watts
             connection.wattsNote = "out"
         }
-        connection.subtitle = subtitle(port: port, naming: naming, role: role)
-        connection.detail = detail(port: port, naming: naming, role: role)
+        connection.subtitle = subtitle(
+            port: port, named: naming != nil || adapterName != nil, role: role
+        )
+        connection.detail = detail(
+            port: port, naming: naming, role: role, titledByAdapter: adapterName != nil
+        )
         if role == .source { connection.adapterRows = adapterRows }
         return connection
     }
@@ -540,23 +547,32 @@ final class DeviceModel: ObservableObject {
 
     /// Line one: what is happening, and where. The verb carries the direction,
     /// so the "in"/"out" beside the wattage never has to be guessed at.
-    private func subtitle(port: PortInfo, naming: DeviceNode?, role: Connection.Role) -> String {
+    private func subtitle(port: PortInfo, named: Bool, role: Connection.Role) -> String {
         var parts: [String] = []
         switch role {
         case .source: parts.append("Charging this Mac")
         case .sink: parts.append("Powered by this Mac")
         case .idle: parts.append(port.carriesData ? "Data only, no power" : "Nothing flowing")
         }
-        // When a device names the card, the port becomes supporting detail.
-        if naming != nil { parts.append(port.name) }
+        // When anything else names the card, the port becomes supporting detail.
+        if named { parts.append(port.name) }
         return parts.joined(separator: " · ")
     }
 
     /// Line two: what is on the end of the cable, and how fast.
-    private func detail(port: PortInfo, naming: DeviceNode?, role: Connection.Role) -> String? {
+    private func detail(
+        port: PortInfo,
+        naming: DeviceNode?,
+        role: Connection.Role,
+        titledByAdapter: Bool = false
+    ) -> String? {
         if role == .source {
-            return [power.adapterName, power.adapterWatts.map { String(format: "%.0f W max", $0) }]
-                .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
+            // The name is only worth repeating here when something else took
+            // the title — otherwise the line would say the adapter twice.
+            return [
+                titledByAdapter ? nil : power.adapterName,
+                power.adapterWatts.map { String(format: "%.0f W max", $0) }
+            ].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }
         if let naming {
             // Vendor rides along on the card's second line rather than living
