@@ -492,7 +492,12 @@ final class DeviceModel: ObservableObject {
             subtitle: "",
             symbol: naming?.symbolName ?? (isSource ? "powerplug.fill" : "cable.connector")
         )
-        connection.isApple = naming?.isApple ?? (port.kind == .magSafe)
+        // A charger names itself, so the card for the cable it arrives on can
+        // wear the same mark a device does — but only when the charger is what
+        // the card is about. A third-party dock that happens to be fed by an
+        // Apple brick must not end up with an Apple logo against its own name.
+        connection.isApple = naming?.isApple
+            ?? (port.kind == .magSafe || (role == .source && power.isAppleAdapter))
         connection.role = role
         connection.port = port
         connection.devices = devices
@@ -510,6 +515,7 @@ final class DeviceModel: ObservableObject {
         }
         connection.subtitle = subtitle(port: port, naming: naming, role: role)
         connection.detail = detail(port: port, naming: naming, role: role)
+        if role == .source { connection.adapterRows = adapterRows }
         return connection
     }
 
@@ -562,6 +568,23 @@ final class DeviceModel: ObservableObject {
         return port.describesCable ? port.linkSummary : nil
     }
 
+    /// The charger's own account of itself. Apple's bricks fill all of this in;
+    /// third-party PD chargers frequently report none of it, which is itself
+    /// the answer to "is this an Apple charger".
+    private var adapterRows: [(label: String, value: String)] {
+        var rows: [(label: String, value: String)] = []
+        if let manufacturer = power.adapterManufacturer {
+            rows.append(("Made by", manufacturer))
+        }
+        if let firmware = power.adapterFirmware {
+            rows.append(("Firmware", firmware))
+        }
+        if let serial = power.adapterSerial {
+            rows.append(("Serial", serial.middleTruncated(to: 28)))
+        }
+        return rows
+    }
+
     /// The best link this Mac's ports can carry.
     var maximumTransfer: String? {
         TransportName.best(Array(Set(ports.flatMap(\.transportsSupported))))
@@ -579,12 +602,17 @@ final class DeviceModel: ObservableObject {
     var portLimitsSummary: String? {
         var parts: [String] = []
         if let transfer = maximumTransfer { parts.append(transfer) }
-        if let charging = maximumCharging {
-            parts.append(String(format: "charges at up to %.0f W (%.0f V / %.2f A)",
+        // What this Mac will accept beats what the attached charger offers:
+        // it is the ceiling that does not change when you swap the brick. The
+        // port's own offer stands in only for machines missing from the table.
+        if let ceiling = MacModel.maximumChargeWatts {
+            parts.append(String(format: "charges at up to %.0f W", ceiling))
+        } else if let charging = maximumCharging {
+            parts.append(String(format: "this charger offers %.0f W (%.0f V / %.2f A)",
                                 charging.watts, charging.volts, charging.amps))
         }
         guard !parts.isEmpty else { return nil }
-        return "This Mac's ports: " + parts.joined(separator: " · ")
+        return "This Mac: " + parts.joined(separator: " · ")
     }
 
     private func restartPowerTimer() {

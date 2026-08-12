@@ -57,6 +57,15 @@ enum Entry {
         if let battery = power.batteryDescription { print("Battery:     \(battery)") }
         if let rating = power.adapterWatts {
             print(String(format: "Charger:     %.0f W rated (\(power.adapterName ?? "unknown"))", rating))
+            let maker = power.adapterManufacturer ?? "not reported"
+            print("Charger made by: \(maker)\(power.isAppleAdapter ? " — Apple" : "")")
+            if let serial = power.adapterSerial { print("Charger serial:  \(serial)") }
+        }
+        print("This Mac:    \(MacModel.identifier)", terminator: "")
+        if let ceiling = MacModel.maximumChargeWatts {
+            print(String(format: ", charges at up to %.0f W", ceiling))
+        } else {
+            print(", charge ceiling not in the table")
         }
         for profile in power.profiles {
             let marker = profile.id == power.negotiatedProfile ? " <- negotiated" : ""

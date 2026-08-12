@@ -28,7 +28,7 @@ struct SettingsView: View {
                 Toggle("Vendor names", isOn: $model.showVendors)
                     .disabled(!model.showDevices)
                     .padding(.leading, 16)
-                Toggle("This Mac's port limits", isOn: $model.showPortLimits)
+                Toggle("This Mac's limits", isOn: $model.showPortLimits)
                 Toggle("Announce devices as they connect", isOn: $model.announceChanges)
             }
 

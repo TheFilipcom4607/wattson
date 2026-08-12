@@ -267,6 +267,9 @@ struct Connection: Identifiable {
     var extraDevices: [FlatDevice] = []
     var profiles: [PDProfile] = []
     var negotiatedProfile: Int?
+    /// What the charger says about itself. Only the source card carries these,
+    /// and only as much of them as the brick bothers to report.
+    var adapterRows: [(label: String, value: String)] = []
 }
 
 struct ScanResult {

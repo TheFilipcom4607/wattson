@@ -25,6 +25,11 @@ and a dock's tree of devices below it.
   cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
+- **Which charger it is.** The brick's own name, who made it, its firmware and
+  serial — and an Apple mark on the card when it is Apple's own, because the
+  adapter reports its manufacturer and Apple's say so.
+- **What this Mac will take**, so you can tell whether the charger is the thing
+  holding you back or the machine is.
 - **What each device is.** Click any device in the tree for its power allocation in
   mA as well as watts, its link speed, vendor, VID/PID and serial number.
 - **Volumes.** A drive mounted from a USB device is listed under it with its free
@@ -73,6 +78,12 @@ Port numbering says nothing about physical position, so the mapping from port
 number to "front" and "rear" was established by hand on one machine and may not
 match yours. The controller-to-port map used to attribute measured power to a
 specific device re-learns itself at runtime whenever exactly one port is occupied.
+
+The maximum charging wattage is the one figure here that is not read from the
+hardware. macOS publishes a great deal about the adapter attached to a Mac and
+nothing at all about what the Mac itself will accept, so that number is a table
+of Apple's published ratings keyed on the model identifier. A model missing from
+the table reports nothing rather than a guess.
 
 Connection history keys on the device's serial number, so it survives the device
 being moved to another port. Plenty of hubs and card readers report no serial at

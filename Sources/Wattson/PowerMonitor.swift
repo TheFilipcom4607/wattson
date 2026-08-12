@@ -48,6 +48,17 @@ struct PowerSnapshot {
     /// What the adapter is rated for, as opposed to what it is delivering.
     var adapterWatts: Double?
     var adapterName: String?
+    /// The adapter's own account of who built it. Apple's own bricks report
+    /// "Apple Inc." here; third-party PD chargers report their own name, or
+    /// nothing at all.
+    var adapterManufacturer: String?
+    var adapterSerial: String?
+    var adapterFirmware: String?
+
+    /// Whether the thing charging this Mac is Apple's own.
+    var isAppleAdapter: Bool {
+        adapterManufacturer?.localizedCaseInsensitiveContains("apple") ?? false
+    }
     var profiles: [PDProfile] = []
     var negotiatedProfile: Int?
 
@@ -192,9 +203,22 @@ enum PowerMonitor {
         if let adapter = properties["AdapterDetails"] as? [String: Any] {
             let watts = number(adapter["Watts"])
             snapshot.adapterWatts = (watts ?? 0) > 0 ? watts : nil
-            if let description = adapter["Description"] as? String, !description.isEmpty {
+            // "Name" is the brick as it is written on the brick — "35W USB-C
+            // Power Adapter". "Description" is the category it falls into, and
+            // is usually the far less useful "pd charger".
+            let name = (adapter["Name"] as? String)?
+                .trimmingCharacters(in: .whitespaces).nilIfEmpty
+            if let name {
+                snapshot.adapterName = name
+            } else if let description = adapter["Description"] as? String, !description.isEmpty {
                 snapshot.adapterName = description.capitalizedFirst
             }
+            snapshot.adapterManufacturer = (adapter["Manufacturer"] as? String)?
+                .trimmingCharacters(in: .whitespaces).nilIfEmpty
+            snapshot.adapterSerial = (adapter["SerialString"] as? String)?
+                .trimmingCharacters(in: .whitespaces).nilIfEmpty
+            snapshot.adapterFirmware = (adapter["FwVersion"] as? String)?
+                .trimmingCharacters(in: .whitespaces).nilIfEmpty
             snapshot.negotiatedProfile = number(adapter["UsbHvcHvcIndex"]).map { Int($0) }
 
             if let menu = adapter["UsbHvcMenu"] as? [[String: Any]] {

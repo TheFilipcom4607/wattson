@@ -576,6 +576,8 @@ private struct ConnectionCard: View {
             }
         }
 
+        rows.append(contentsOf: connection.adapterRows)
+
         for device in connection.devices {
             rows.append(contentsOf: device.detailRows(includeVendor: context.showVendors))
         }
