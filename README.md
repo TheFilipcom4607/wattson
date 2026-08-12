@@ -24,6 +24,14 @@ with the hub's tree of devices below it.
   cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
+- **What each device is.** Click any device in the tree for its power allocation in
+  mA as well as watts, its link speed, vendor, VID/PID and serial number.
+- **Volumes.** A drive mounted from a USB device is listed under it with its free
+  space, a Show in Finder button, and an eject that unmounts the whole disk rather
+  than one partition of a two-partition stick.
+- **Connection history**, and optionally a small notice as things are plugged in and
+  pulled out — off by default, in Settings.
+- **Search**, once the tree is long enough to need it.
 
 ## Building
 
@@ -56,3 +64,8 @@ Port numbering says nothing about physical position, so the mapping from port
 number to "front" and "rear" was established by hand on one machine and may not
 match yours. The controller-to-port map used to attribute measured power to a
 specific device re-learns itself at runtime whenever exactly one port is occupied.
+
+Connection history keys on the device's serial number, so it survives the device
+being moved to another port. Plenty of hubs and card readers report no serial at
+all; theirs keys on the port instead, and the panel says so rather than implying a
+history it cannot stand behind. Nothing is recorded while Wattson is not running.

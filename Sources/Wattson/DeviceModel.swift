@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -31,6 +32,14 @@ final class DeviceModel: ObservableObject {
     @Published private(set) var ports: [PortInfo] = []
     /// Rolling history for the sparkline, oldest first.
     @Published private(set) var history: [PowerSample] = []
+    /// Mounted volumes, mapped to the USB devices they live on.
+    @Published private(set) var volumes: [VolumeInfo] = []
+    /// Eject failures, kept next to the button that caused them.
+    @Published private(set) var ejectErrors: [String: String] = [:]
+    @Published private(set) var ejecting: Set<String> = []
+
+    /// What was attached and when, for as long as this app was running.
+    let log = ConnectionLog()
 
     private static let historyLimit = 150
     @Published private(set) var isScanning = false
@@ -51,6 +60,9 @@ final class DeviceModel: ObservableObject {
     @Published var showPortLimits: Bool { didSet { save(showPortLimits, "showPortLimits") } }
     @Published var showDevices: Bool { didSet { save(showDevices, "showDevices") } }
     @Published var showVendors: Bool { didSet { save(showVendors, "showVendors") } }
+    /// Off unless asked for: an app that starts talking after an update is an
+    /// app people quit.
+    @Published var announceChanges: Bool { didSet { save(announceChanges, "announceChanges") } }
 
     private static let titleModeKey = "titleMode"
 
@@ -66,6 +78,17 @@ final class DeviceModel: ObservableObject {
     private var powerWatcher: PowerSourceWatcher?
     private var pendingRescan: Task<Void, Never>?
     private var powerTimer: Timer?
+    private let volumeMonitor = VolumeMonitor()
+    private var volumeObservers: [NSObjectProtocol] = []
+
+    /// The first scan of a run is a baseline, not a burst of arrivals.
+    private var hasScanned = false
+    private let toasts = ToastPresenter()
+    private var toastTask: Task<Void, Never>?
+    private var pendingArrivals: [DeviceNode] = []
+    private var pendingDepartures: [DeviceNode] = []
+    private var shownArrivals: [DeviceNode] = []
+    private var shownDepartures: [DeviceNode] = []
 
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.titleModeKey) ?? ""
@@ -75,6 +98,7 @@ final class DeviceModel: ObservableObject {
         showPortLimits = Self.flag("showPortLimits")
         showDevices = Self.flag("showDevices")
         showVendors = Self.flag("showVendors")
+        announceChanges = UserDefaults.standard.bool(forKey: "announceChanges")
 
         watcher = HotplugWatcher { [weak self] in
             self?.scheduleRescan()
@@ -86,9 +110,27 @@ final class DeviceModel: ObservableObject {
             Task { @MainActor in self?.refresh() }
         }
         powerWatcher?.start()
+
+        // Mounting is its own event: an encrypted volume can be unlocked long
+        // after the drive it lives on was plugged in, and no USB event fires.
+        for name in [NSWorkspace.didMountNotification,
+                     NSWorkspace.didUnmountNotification,
+                     NSWorkspace.didRenameVolumeNotification] {
+            let observer = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.readVolumes() }
+            }
+            volumeObservers.append(observer)
+        }
+
         refreshLaunchAtLogin()
         refresh()
         restartPowerTimer()
+    }
+
+    deinit {
+        volumeObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
     }
 
     var titleText: String? { title(for: titleMode) }
@@ -155,9 +197,119 @@ final class DeviceModel: ObservableObject {
         isScanning = true
         Task {
             let scan = await Task.detached(priority: .userInitiated) { Scanner.scan() }.value
+            let before = self.presentDevices
             self.result = scan
             self.attributeMeasuredPower()
+            self.noteChanges(from: before)
+            self.readVolumes()
             self.isScanning = false
+        }
+    }
+
+    // MARK: - What changed
+
+    /// Everything on the tree right now, keyed by the identity history uses.
+    private var presentDevices: [String: DeviceNode] {
+        var devices: [String: DeviceNode] = [:]
+        for row in result.devices.flatMap({ $0.flattenedRows() }) {
+            devices[row.node.persistentKey] = row.node
+        }
+        return devices
+    }
+
+    /// The log and the toast are the same fact told twice, and both fall out of
+    /// diffing consecutive scans — `HotplugWatcher` only ever says "something
+    /// changed", never what.
+    private func noteChanges(from before: [String: DeviceNode]) {
+        let after = presentDevices
+        // The first scan of a run is the baseline. Everything already attached
+        // at launch would otherwise read as having just arrived, and the log is
+        // explicit that it covers only what happened while Wattson watched.
+        guard hasScanned else {
+            hasScanned = true
+            return
+        }
+
+        let arrived = after.filter { before[$0.key] == nil }.map(\.value)
+        let left = before.filter { after[$0.key] == nil }.map(\.value)
+        guard !arrived.isEmpty || !left.isEmpty else { return }
+
+        let now = Date()
+        log.append(
+            arrived.map {
+                ConnectionEvent(device: $0.persistentKey, name: $0.name, kind: .connected, at: now)
+            } + left.map {
+                ConnectionEvent(device: $0.persistentKey, name: $0.name, kind: .disconnected, at: now)
+            }
+        )
+
+        // Nothing to announce to somebody already looking at the list.
+        guard announceChanges, !isPresented else { return }
+        pendingArrivals += arrived
+        pendingDepartures += left
+        scheduleToast()
+    }
+
+    /// A hub announces its downstream devices in a burst, which would put one
+    /// toast per device on screen. The debounce collapses the burst; merging
+    /// into a toast that is still up collapses the second rescan into the first.
+    private func scheduleToast() {
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.presentToast()
+        }
+    }
+
+    private func presentToast() {
+        if toasts.isShowing {
+            pendingArrivals = unique(shownArrivals + pendingArrivals)
+            pendingDepartures = unique(shownDepartures + pendingDepartures)
+        }
+        guard let content = ToastSummary.content(
+            arrived: pendingArrivals, left: pendingDepartures
+        ) else { return }
+
+        shownArrivals = pendingArrivals
+        shownDepartures = pendingDepartures
+        pendingArrivals = []
+        pendingDepartures = []
+        toasts.show(content)
+    }
+
+    private func unique(_ nodes: [DeviceNode]) -> [DeviceNode] {
+        var seen = Set<String>()
+        return nodes.filter { seen.insert($0.persistentKey).inserted }
+    }
+
+    // MARK: - Volumes
+
+    private func readVolumes() {
+        volumes = volumeMonitor.read()
+    }
+
+    func volumes(for node: DeviceNode) -> [VolumeInfo] {
+        volumes.filter { $0.deviceID == node.id }
+    }
+
+    func reveal(_ volume: VolumeInfo) {
+        NSWorkspace.shared.activateFileViewerSelecting([volume.url])
+    }
+
+    func eject(_ volume: VolumeInfo) {
+        ejectErrors[volume.id] = nil
+        ejecting.insert(volume.id)
+        volumeMonitor.eject(volume) { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.ejecting.remove(volume.id)
+                self.ejectErrors[volume.id] = message
+                self.readVolumes()
+                // A successful eject takes the device off the bus, which the
+                // tree should show without waiting for the hotplug rescan.
+                if message == nil { self.refresh() }
+            }
         }
     }
 
@@ -278,6 +430,54 @@ final class DeviceModel: ObservableObject {
         return list.enumerated()
             .sorted { ($0.element.role.rank, $0.offset) < ($1.element.role.rank, $1.offset) }
             .map(\.element)
+    }
+
+    /// The same cards, with anything that does not match the query taken out.
+    ///
+    /// Pure UI over the existing model — no new data, and no new scan.
+    func connections(matching query: String) -> [Connection] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return connections }
+
+        return connections.compactMap { connection in
+            // Searching for the hub means wanting to see what is on it, so a
+            // card that matches by name keeps its whole tree.
+            if connection.title.lowercased().contains(needle)
+                || connection.devices.contains(where: { matches($0, needle) }) {
+                return connection
+            }
+            let kept = keeping(connection.extraDevices, matching: needle)
+            guard !kept.isEmpty else { return nil }
+            var filtered = connection
+            filtered.extraDevices = kept
+            return filtered
+        }
+    }
+
+    private func matches(_ node: DeviceNode, _ needle: String) -> Bool {
+        [node.name, node.vendor ?? "", node.typeLabel ?? "", node.serial ?? ""]
+            .contains { $0.lowercased().contains(needle) }
+    }
+
+    /// Keeps every match and whatever leads to it — a hit three levels into a
+    /// hub still belongs under that hub, not orphaned at the root.
+    private func keeping(_ rows: [FlatDevice], matching needle: String) -> [FlatDevice] {
+        var keep = Set<Int>()
+        for (index, row) in rows.enumerated() where matches(row.node, needle) {
+            keep.insert(index)
+            // Walk back up: the nearest earlier row at each shallower depth is
+            // this row's parent, and so on to the root of the card.
+            var depth = row.depth
+            var cursor = index - 1
+            while cursor >= 0, depth > 0 {
+                if rows[cursor].depth < depth {
+                    keep.insert(cursor)
+                    depth = rows[cursor].depth
+                }
+                cursor -= 1
+            }
+        }
+        return rows.enumerated().filter { keep.contains($0.offset) }.map(\.element)
     }
 
     private func connection(for port: PortInfo, devices: [DeviceNode]) -> Connection {

@@ -5,10 +5,14 @@ struct MenuContentView: View {
     @ObservedObject var model: DeviceModel
     var onOpenSettings: () -> Void = {}
     var onOpenCableTest: () -> Void = {}
+    var onClose: () -> Void = {}
 
     /// Which connection cards are showing their detail rows. Keyed by the
     /// connection's stable id so a rescan does not collapse them.
     @State private var expanded: Set<String> = []
+    /// The same, for individual devices in the tree.
+    @State private var expandedDevices: Set<String> = []
+    @State private var query = ""
     /// Measured height of the scrolling body: a ScrollView has no intrinsic
     /// height and the popover sizes to fit, so it would collapse to nothing.
     @State private var bodyHeight: CGFloat = 0
@@ -22,6 +26,8 @@ struct MenuContentView: View {
 
             Divider().padding(.top, 10).padding(.bottom, 8)
 
+            if showsSearch { searchField }
+
             scrollingBody
 
             Divider().padding(.vertical, 6)
@@ -29,6 +35,15 @@ struct MenuContentView: View {
         }
         .frame(width: Self.width)
         .padding(.vertical, 10)
+        // Escape clears the query first and closes the panel only once there is
+        // nothing left to clear — a focused text field changes what Escape means.
+        .onExitCommand {
+            if query.isEmpty {
+                onClose()
+            } else {
+                query = ""
+            }
+        }
     }
 
     // MARK: - Header
@@ -134,13 +149,57 @@ struct MenuContentView: View {
 
     private var overflows: Bool { bodyHeight > maxBodyHeight + 1 }
 
+    /// Only once the tree is big enough to need it. A permanent search box over
+    /// a four-row list is an admission that the list is too long, on a panel
+    /// where it usually is not.
+    private var showsSearch: Bool {
+        model.showDevices && (model.result.deviceCount > 8 || !query.isEmpty)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+            TextField("Search devices", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.45)))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+    }
+
+    /// What every device row needs from the model, gathered once.
+    private var rowContext: DeviceRowContext {
+        DeviceRowContext(
+            showVendors: model.showVendors,
+            history: { model.log.history(for: $0) },
+            volumes: { model.volumes(for: $0) },
+            isEjecting: { model.ejecting.contains($0.id) },
+            ejectError: { model.ejectErrors[$0.id] },
+            reveal: { model.reveal($0) },
+            eject: { model.eject($0) }
+        )
+    }
+
     private var scrollingBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 if model.showDevices {
-                    let connections = model.connections
+                    let connections = model.connections(matching: query)
                     if connections.isEmpty {
-                        Text("Nothing connected")
+                        Text(query.isEmpty ? "Nothing connected" : "No device matches “\(query)”")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,9 +208,17 @@ struct MenuContentView: View {
                         ConnectionCard(
                             connection: connection,
                             showCable: model.showCable,
-                            showVendors: model.showVendors,
+                            context: rowContext,
                             isExpanded: expanded.contains(connection.id),
-                            toggle: { toggle(connection.id) }
+                            toggle: { toggle(connection.id) },
+                            expandedDevices: expandedDevices,
+                            toggleDevice: { id in
+                                if expandedDevices.contains(id) {
+                                    expandedDevices.remove(id)
+                                } else {
+                                    expandedDevices.insert(id)
+                                }
+                            }
                         )
                     }
                 }
@@ -370,9 +437,11 @@ private struct Sparkline: View {
 private struct ConnectionCard: View {
     let connection: Connection
     var showCable = true
-    var showVendors = true
+    let context: DeviceRowContext
     let isExpanded: Bool
     let toggle: () -> Void
+    var expandedDevices: Set<String> = []
+    var toggleDevice: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -384,7 +453,12 @@ private struct ConnectionCard: View {
                 // and have to meet to read as continuous lines.
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(connection.extraDevices) { entry in
-                        DeviceLine(entry: entry, showVendors: showVendors)
+                        DeviceLine(
+                            entry: entry,
+                            context: context,
+                            isExpanded: expandedDevices.contains(entry.node.id),
+                            toggle: { toggleDevice(entry.node.id) }
+                        )
                     }
                 }
                 .padding(.top, 6)
@@ -401,6 +475,14 @@ private struct ConnectionCard: View {
                             profiles: connection.profiles,
                             negotiated: connection.negotiatedProfile
                         )
+                    }
+                    // A drive plugged straight into a port names its own card
+                    // and has no tree row, so this is the only place its
+                    // volumes and its history can appear. With several devices
+                    // on the port they each have a tree row of their own, and
+                    // repeating them here would say everything twice.
+                    if connection.devices.count == 1, let device = connection.devices.first {
+                        DeviceAttachments(node: device, context: context)
                     }
                 }
                 .padding(.top, 7)
@@ -495,28 +577,73 @@ private struct ConnectionCard: View {
         }
 
         for device in connection.devices {
-            rows.append(contentsOf: device.detailRows(includeVendor: showVendors))
+            rows.append(contentsOf: device.detailRows(includeVendor: context.showVendors))
         }
         return rows
     }
 }
 
+/// What a device row needs from the model, so the tree does not have to carry
+/// the whole thing around.
+struct DeviceRowContext {
+    var showVendors = true
+    var history: (DeviceNode) -> [ConnectionEvent] = { _ in [] }
+    var volumes: (DeviceNode) -> [VolumeInfo] = { _ in [] }
+    var isEjecting: (VolumeInfo) -> Bool = { _ in false }
+    var ejectError: (VolumeInfo) -> String? = { _ in nil }
+    var reveal: (VolumeInfo) -> Void = { _ in }
+    var eject: (VolumeInfo) -> Void = { _ in }
+}
+
 /// A device hanging below whatever names the card — a hub's downstream ports.
+///
+/// Expands in place rather than into a window of its own: the panel is a
+/// transient popover that closes on click-outside, so a second window would
+/// fight the interaction model the whole way.
 private struct DeviceLine: View {
     let entry: FlatDevice
-    var showVendors = true
+    let context: DeviceRowContext
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    @State private var isHovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // One thin rule per level of nesting. Indentation alone stopped
-            // being legible three levels into a hub-behind-a-hub.
-            ForEach(0..<entry.depth, id: \.self) { _ in
-                Rectangle()
-                    .fill(.quaternary)
-                    .frame(width: 1)
-                    .padding(.leading, 4)
-                    .padding(.trailing, 8)
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: toggle) { row }
+                .buttonStyle(.plain)
+
+            if isExpanded {
+                // The guides continue down the side of the open inspector: they
+                // are drawn per row, and a gap here would break the lines just
+                // where the tree is deepest.
+                HStack(alignment: .top, spacing: 0) {
+                    guides
+                    DeviceInspector(node: entry.node, context: context)
+                        .padding(.leading, 19)
+                }
+                .padding(.top, 5)
+                .padding(.bottom, 6)
             }
+        }
+        .onHover { isHovering = $0 }
+    }
+
+    /// One thin rule per level of nesting. Indentation alone stopped being
+    /// legible three levels into a hub-behind-a-hub.
+    private var guides: some View {
+        ForEach(0..<entry.depth, id: \.self) { _ in
+            Rectangle()
+                .fill(.quaternary)
+                .frame(width: 1)
+                .padding(.leading, 4)
+                .padding(.trailing, 8)
+        }
+    }
+
+    private var row: some View {
+        HStack(alignment: .top, spacing: 0) {
+            guides
 
             // Legibility here is a function of ink, not area: 9 pt at .regular
             // and .tertiary left the hairline glyphs as smudges. Filled, heavier
@@ -557,16 +684,192 @@ private struct DeviceLine: View {
                         .truncationMode(.tail)
                 }
             }
+
+            // Reserved width, drawn only on hover or while open: a chevron on
+            // every row at rest is noise on a list that is mostly just read.
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .opacity(isExpanded || isHovering ? 1 : 0)
+                .frame(width: 9)
+                .padding(.leading, 4)
+                .padding(.top, 3)
         }
         .padding(.vertical, 3)
-        .help(entry.node.detailLines(includeVendor: showVendors).joined(separator: "\n"))
+        .contentShape(Rectangle())
+        .help(entry.node.detailLines(includeVendor: context.showVendors).joined(separator: "\n"))
     }
 
     private var meta: String? {
-        [entry.node.typeLabel, entry.node.linkSummary, showVendors ? entry.node.vendor : nil]
+        [entry.node.typeLabel, entry.node.linkSummary, context.showVendors ? entry.node.vendor : nil]
             .compactMap { $0 }
             .joined(separator: " · ")
             .nilIfEmpty
+    }
+}
+
+/// A device's expanded detail, ordered so the power answer comes first —
+/// that is what this app is for.
+private struct DeviceInspector: View {
+    let node: DeviceNode
+    let context: DeviceRowContext
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Divider().opacity(0.5)
+            ForEach(node.inspectorSections()) { section in
+                InspectorBlock(title: section.title) {
+                    ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                        DetailRow(label: row.label, value: row.value)
+                    }
+                }
+            }
+            DeviceAttachments(node: node, context: context)
+        }
+        // A serial nobody can copy is a serial nobody can look up.
+        .textSelection(.enabled)
+    }
+}
+
+/// Volumes and history: the two parts of a device's detail that are lists
+/// rather than label/value pairs, and that a card header needs as much as a
+/// tree row does.
+private struct DeviceAttachments: View {
+    let node: DeviceNode
+    let context: DeviceRowContext
+
+    var body: some View {
+        let volumes = context.volumes(node)
+        VStack(alignment: .leading, spacing: 7) {
+            if !volumes.isEmpty {
+                InspectorBlock(title: "Volumes") {
+                    ForEach(volumes) { volume in
+                        VolumeRow(volume: volume, context: context)
+                    }
+                }
+            }
+            InspectorBlock(title: "History") {
+                HistoryList(node: node, events: context.history(node))
+            }
+        }
+    }
+}
+
+private struct InspectorBlock<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            content()
+        }
+    }
+}
+
+/// A mounted volume, with the two things anyone opens a USB list to do.
+private struct VolumeRow: View {
+    let volume: VolumeInfo
+    let context: DeviceRowContext
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(volume.name)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if context.isEjecting(volume) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
+                        .frame(width: 20, height: 16)
+                } else {
+                    IconButton(symbol: "folder", help: "Show in Finder") { context.reveal(volume) }
+                    IconButton(symbol: "eject.fill", help: "Eject") { context.eject(volume) }
+                }
+            }
+            if let summary = volume.capacitySummary {
+                Text(summary)
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            if let fraction = volume.usedFraction {
+                CapacityBar(fraction: fraction)
+            }
+            // Unmount fails routinely because something still holds a file
+            // open. A button that silently does nothing is worse than none.
+            if let error = context.ejectError(volume) {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Deliberately monochrome. The panel's one coloured bar means power, and a
+/// second bar in the accent colours would be read as part of the same story.
+private struct CapacityBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(.secondary)
+                    .frame(width: max(1, geometry.size.width * fraction))
+            }
+        }
+        .frame(height: 3)
+    }
+}
+
+/// When this device came and went, for as long as anyone was watching.
+private struct HistoryList: View {
+    let node: DeviceNode
+    let events: [ConnectionEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if events.isEmpty {
+                Text("Already attached when Wattson started")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(events.prefix(6))) { event in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(event.kind.label)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 74, alignment: .leading)
+                        Text(event.timeLabel)
+                            .font(.system(size: 11))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            Text(caveat)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 1)
+        }
+    }
+
+    /// Whichever of the two things this list cannot let somebody assume: that
+    /// it is complete, or that it is about this device rather than this port.
+    private var caveat: String {
+        node.hasStableIdentity
+            ? "Recorded only while Wattson was running."
+            : "No serial reported, so this history follows the port, not the device."
     }
 }
 

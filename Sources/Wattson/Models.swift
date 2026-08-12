@@ -11,6 +11,11 @@ struct DeviceNode: Identifiable, Hashable {
     /// away and rebuild every row, losing expansion state a couple of times a
     /// second. Scanner derives it from the locationID, which is stable.
     var id: String = UUID().uuidString
+    /// Stable across ports and reboots, when the device offers a serial at all.
+    /// Cheap hubs and card readers frequently do not, and Thunderbolt entries
+    /// never do — `persistentKey` falls back to the port id for those, and
+    /// their history resets when they move.
+    var persistentID: String?
     var name: String
     var kind: Kind
     /// What the thing does: "Hub", "Storage", "Ethernet", ...
@@ -20,10 +25,18 @@ struct DeviceNode: Identifiable, Hashable {
     /// "USB 3.2", "Thunderbolt 4"
     var version: String?
     var vendor: String?
+    /// The device's own serial, when it publishes one. The prerequisite for
+    /// `persistentID`, not a decorative extra field.
+    var serial: String?
+    var vendorID: Int?
+    var productID: Int?
     var isApple = false
     /// Power budget granted to the device over the bus. An allocation, not a
     /// measurement — the device may draw less, or negotiate more over PD.
     var watts: Double?
+    /// The same allocation as the bus states it. `watts` is this at 5 V, but mA
+    /// is the figure printed on the device's own spec sheet.
+    var milliamps: Double?
     /// Real VBUS draw, set only when this device is alone on its port so the
     /// port's measurement can be attributed to it unambiguously.
     var measuredWatts: Double?
@@ -35,6 +48,18 @@ struct DeviceNode: Identifiable, Hashable {
 
     var flattenedCount: Int {
         1 + children.reduce(0) { $0 + $1.flattenedCount }
+    }
+
+    /// What anything keyed on history keys on. Falls back to the port identity,
+    /// which is a weaker promise — `hasStableIdentity` says which one you got,
+    /// and the UI has to admit the difference rather than paper over it.
+    var persistentKey: String { persistentID ?? id }
+    var hasStableIdentity: Bool { persistentID != nil }
+
+    /// "2109:0817" — the pair that names a model, as everyone writes it.
+    var usbIDs: String? {
+        guard let vendorID, let productID else { return nil }
+        return String(format: "%04X:%04X", vendorID, productID)
     }
 
     /// Self and everything below it, with nesting kept as a depth so a card can
@@ -97,13 +122,65 @@ struct DeviceNode: Identifiable, Hashable {
         if let version {
             rows.append(("Version", version))
         }
-        if measuredWatts == nil, let watts {
-            rows.append(("Budget", String(format: "%.1f W allocated, not measured", watts)))
+        if measuredWatts == nil, let budget = budgetSummary {
+            rows.append(("Budget", budget))
         }
         if includeVendor, let vendor, !vendor.isEmpty {
             rows.append(("Vendor", vendor))
         }
+        if let usbIDs {
+            rows.append(("VID/PID", usbIDs))
+        }
+        if let serial, !serial.isEmpty {
+            rows.append(("Serial", serial.middleTruncated(to: 28)))
+        }
         return rows
+    }
+
+    /// The allocation, with the bus's own mA beside the watts derived from it.
+    /// Both figures are the same fact; neither is a measurement.
+    var budgetSummary: String? {
+        guard let watts else { return nil }
+        guard let milliamps else {
+            return String(format: "%.1f W allocated, not measured", watts)
+        }
+        return String(format: "%.0f mA at 5 V (%.1f W allocated, not measured)", milliamps, watts)
+    }
+
+    /// The expanded inspector for a tree row, ordered so the power answer comes
+    /// first — that is what the app is for. History is rendered separately: it
+    /// is a list of events, not a label/value pair.
+    func inspectorSections() -> [DeviceSection] {
+        var sections: [DeviceSection] = []
+
+        var power: [(label: String, value: String)] = []
+        if let measuredWatts {
+            power.append(("Measured", String(format: "%.2f W on this port", measuredWatts)))
+        }
+        if let watts {
+            let allocation = milliamps.map { String(format: "%.0f mA at 5 V (%.1f W)", $0, watts) }
+                ?? String(format: "%.1f W", watts)
+            power.append(("Allocated", allocation))
+        }
+        if power.isEmpty {
+            power.append(("Power", "Not reported"))
+        }
+        sections.append(DeviceSection(title: "Power", rows: power))
+
+        var link: [(label: String, value: String)] = []
+        if !speeds.isEmpty { link.append(("Speed", speeds.joined(separator: ", "))) }
+        if let version { link.append(("Version", version)) }
+        if !link.isEmpty { sections.append(DeviceSection(title: "Link", rows: link)) }
+
+        var identity: [(label: String, value: String)] = []
+        if let vendor, !vendor.isEmpty { identity.append(("Vendor", vendor)) }
+        if let usbIDs { identity.append(("VID/PID", usbIDs)) }
+        if let serial, !serial.isEmpty {
+            identity.append(("Serial", serial.middleTruncated(to: 28)))
+        }
+        if !identity.isEmpty { sections.append(DeviceSection(title: "Identity", rows: identity)) }
+
+        return sections
     }
 
     func detailLines(includeVendor: Bool = true) -> [String] {
@@ -114,13 +191,28 @@ struct DeviceNode: Identifiable, Hashable {
         if let measuredWatts {
             lines.append(String(format: "Power: %.2f W measured", measuredWatts))
         } else if let watts {
-            lines.append(String(format: "Power: %.1f W allocated (not measured)", watts))
+            let allocation = milliamps.map { String(format: "%.0f mA at 5 V, ", $0) } ?? ""
+            lines.append(String(format: "Power: %@%.1f W allocated (not measured)", allocation, watts))
         }
         if includeVendor, let vendor, !vendor.isEmpty {
             lines.append("Vendor: " + vendor)
         }
+        if let usbIDs {
+            lines.append("VID/PID: " + usbIDs)
+        }
+        if let serial, !serial.isEmpty {
+            lines.append("Serial: " + serial)
+        }
         return lines
     }
+}
+
+/// One labelled block of a device's expanded inspector.
+struct DeviceSection: Identifiable {
+    let title: String
+    let rows: [(label: String, value: String)]
+
+    var id: String { title }
 }
 
 /// A device row inside a card, pre-flattened with its nesting depth.
@@ -274,6 +366,15 @@ enum SpeedFormat {
 
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+
+    /// Drops the middle rather than the tail: on flash media the digits that
+    /// tell two identical sticks apart are usually at the end, which is exactly
+    /// what ordinary truncation would eat.
+    func middleTruncated(to limit: Int) -> String {
+        guard count > limit, limit > 5 else { return self }
+        let head = (limit - 1) / 2
+        return prefix(head) + "…" + suffix(limit - 1 - head)
+    }
 }
 
 /// Ties a port's measured VBUS draw to the device responsible for it.

@@ -36,7 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     self.popover.performClose(nil)
                     self.cableTest.show(model: self.model)
-                }
+                },
+                // Escape reaches the panel's own handler first, so closing has
+                // to be something it can ask for.
+                onClose: { [weak self] in self?.popover.performClose(nil) }
             )
         )
         // Let the popover follow the panel as sections expand and collapse.

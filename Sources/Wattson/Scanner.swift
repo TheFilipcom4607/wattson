@@ -38,7 +38,16 @@ enum Scanner {
             // into the same port, which is exactly the identity SwiftUI wants.
             node.id = "usb-\(location)"
             node.vendor = vendor(from: properties)
-            node.isApple = (properties["idVendor"] as? NSNumber)?.intValue == 0x05AC
+            node.vendorID = (properties["idVendor"] as? NSNumber)?.intValue
+            node.productID = (properties["idProduct"] as? NSNumber)?.intValue
+            node.serial = (properties["USB Serial Number"] as? String)?.nilIfEmpty
+            // Identity that survives a move to another port. Everything keyed on
+            // history keys on this; without a serial there is nothing to key on,
+            // and the port id has to stand in.
+            if let vendorID = node.vendorID, let productID = node.productID, let serial = node.serial {
+                node.persistentID = String(format: "%04X:%04X:%@", vendorID, productID, serial)
+            }
+            node.isApple = node.vendorID == 0x05AC
             node.controller = (location >> 24) & 0xFF
             node.typeLabel = functionLabel(for: service, properties: properties)
 
@@ -53,6 +62,7 @@ enum Scanner {
             // Current the port has granted this device; USB rails are 5 V.
             if let mA = (properties["UsbPowerSinkAllocation"] as? NSNumber)?.doubleValue, mA > 0 {
                 node.watts = mA * 5 / 1000
+                node.milliamps = mA
             }
 
             byLocation[location] = node
