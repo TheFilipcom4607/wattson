@@ -60,6 +60,9 @@ final class DeviceModel: ObservableObject {
     @Published var showPortLimits: Bool { didSet { save(showPortLimits, "showPortLimits") } }
     @Published var showDevices: Bool { didSet { save(showDevices, "showDevices") } }
     @Published var showVendors: Bool { didSet { save(showVendors, "showVendors") } }
+    /// Diagnostic capture is deliberately opt-in: its reports can be large and
+    /// may contain serial numbers and other hardware identifiers.
+    @Published var showDebugOptions: Bool { didSet { save(showDebugOptions, "showDebugOptions") } }
     /// Off unless asked for: an app that starts talking after an update is an
     /// app people quit.
     @Published var announceChanges: Bool { didSet { save(announceChanges, "announceChanges") } }
@@ -98,6 +101,7 @@ final class DeviceModel: ObservableObject {
         showPortLimits = Self.flag("showPortLimits")
         showDevices = Self.flag("showDevices")
         showVendors = Self.flag("showVendors")
+        showDebugOptions = UserDefaults.standard.bool(forKey: "showDebugOptions")
         announceChanges = UserDefaults.standard.bool(forKey: "announceChanges")
 
         watcher = HotplugWatcher { [weak self] in

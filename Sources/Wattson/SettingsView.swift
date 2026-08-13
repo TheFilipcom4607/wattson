@@ -39,6 +39,14 @@ struct SettingsView: View {
                 ))
             }
 
+            group("Debug Options") {
+                Toggle("Show raw hardware capture", isOn: $model.showDebugOptions)
+                Text("Adds a diagnostic capture command to the menu. Reports can be large and may include serial numbers.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             Text("Wattson \(Bundle.main.shortVersion)")

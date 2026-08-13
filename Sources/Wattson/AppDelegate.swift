@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = DeviceModel()
     private let settings = SettingsWindowController()
     private let cableTest = CableTestWindowController()
+    private let diagnostics = DiagnosticsWindowController()
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.popover.performClose(nil)
                     self.cableTest.show(model: self.model)
                 },
+                onOpenDiagnostics: { [weak self] in
+                    guard let self else { return }
+                    self.popover.performClose(nil)
+                    self.diagnostics.show(model: self.model)
+                },
                 // Escape reaches the panel's own handler first, so closing has
                 // to be something it can ask for.
                 onClose: { [weak self] in self?.popover.performClose(nil) }
@@ -58,6 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in self?.updateStatusItem() }
             .store(in: &cancellables)
 
+        // The debug capture command must genuinely disappear until the user
+        // turns it on in Settings, including from the app's normal menu.
+        model.$showDebugOptions
+            .dropFirst()
+            .sink { [weak self] _ in self?.installMainMenu() }
+            .store(in: &cancellables)
+
         updateStatusItem()
     }
 
@@ -75,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Test Your Cable…", action: #selector(openCableTest), keyEquivalent: "")
+        if model.showDebugOptions {
+            appMenu.addItem(withTitle: "Capture Raw Hardware Data…", action: #selector(openDiagnostics), keyEquivalent: "")
+        }
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(
@@ -116,6 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openCableTest() {
         cableTest.show(model: model)
+    }
+
+    @objc private func openDiagnostics() {
+        diagnostics.show(model: model)
     }
 
     private func updateStatusItem() {

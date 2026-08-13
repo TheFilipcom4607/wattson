@@ -66,6 +66,19 @@ enum SMCMonitor {
         )
     }
 
+    /// The direct SMC key values Wattson reads for its live power display.
+    /// They are intentionally not combined or converted into any UI summary;
+    /// this is used by the raw diagnostic capture.
+    static func diagnosticValues() -> String {
+        let keys = ["PSTR", "PDTR", "D1JV", "D1JI", "D2JV", "D2JI", "D3JV", "D3JI"]
+        guard open() else { return "<AppleSMC could not be opened>" }
+        return keys.map { key in
+            guard let value = value(forKey: key) else { return "\(key)=<not available>" }
+            return "\(key)=\(value)"
+        }
+        .joined(separator: "\n")
+    }
+
     // MARK: - Connection
 
     private static var connection: io_connect_t = 0

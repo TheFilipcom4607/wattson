@@ -5,6 +5,7 @@ struct MenuContentView: View {
     @ObservedObject var model: DeviceModel
     var onOpenSettings: () -> Void = {}
     var onOpenCableTest: () -> Void = {}
+    var onOpenDiagnostics: () -> Void = {}
     var onClose: () -> Void = {}
 
     /// Which connection cards are showing their detail rows. Keyed by the
@@ -274,6 +275,9 @@ struct MenuContentView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
             MenuButton(title: "Test Your Cable…", action: onOpenCableTest)
+            if model.showDebugOptions {
+                MenuButton(title: "Capture Raw Hardware Data…", action: onOpenDiagnostics)
+            }
             MenuButton(title: "Settings…", trailing: "⌘,", action: onOpenSettings)
                 .keyboardShortcut(",")
             MenuButton(title: "Quit Wattson", trailing: "⌘Q") {
