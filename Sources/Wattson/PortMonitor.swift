@@ -118,6 +118,13 @@ struct PortInfo: Identifiable, Hashable {
     var pins: [String: Int] = [:]
     var powerOptions: [PowerOption] = []
     var negotiated: PowerOption?
+    /// Which mechanism actually won the power negotiation: "USB-PD", "TypeC",
+    /// "Brick ID". A Type-C win means there was no PD handshake at all — the
+    /// source is only advertising a current over the CC line, which is
+    /// legitimate, caps at 15 W, and is worth saying out loud.
+    var powerSourceKind: String?
+
+    var hasPDContract: Bool { powerSourceKind == "USB-PD" }
     /// The cable's own chip, when the hardware has had reason to interrogate it.
     var emarker: CableEMarker?
     /// How many times anything has ever been plugged into this port. Counted by
@@ -314,12 +321,21 @@ enum PortMonitor {
 
         while case let child = IOIteratorNext(iterator), child != 0 {
             defer { IOObjectRelease(child) }
+            // A port offers power by several mechanisms at once — USB-PD, plain
+            // Type-C current advertising, Brick ID — and exactly one of them
+            // wins. Reading only the USB-PD child meant a source that never did
+            // a PD handshake looked like no source at all, so a monitor feeding
+            // this Mac 5 V at 3 A read as "data only" while the header counted
+            // it as charging.
             if let properties = properties(of: child),
-               properties["PowerSourceName"] as? String == "USB-PD" {
+               let kind = properties["PowerSourceName"] as? String,
+               let winner = (properties["WinningPowerSourceOption"] as? [String: Any]).flatMap(option),
+               port.negotiated == nil || kind == "USB-PD" {
+                port.negotiated = winner
+                port.powerSourceKind = kind
                 port.powerOptions = (properties["PowerSourceOptions"] as? [[String: Any]] ?? [])
                     .compactMap(option)
                     .sorted { $0.volts < $1.volts }
-                port.negotiated = (properties["WinningPowerSourceOption"] as? [String: Any]).flatMap(option)
             }
             collectPowerDelivery(under: child, into: &port, depth: depth + 1)
         }

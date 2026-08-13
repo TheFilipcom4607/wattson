@@ -492,7 +492,7 @@ final class DeviceModel: ObservableObject {
         // And with nothing plugged in but the charger, the charger names it —
         // "35W USB-C Power Adapter" is what that card is about, and the port it
         // arrived on is the supporting detail.
-        let adapterName = naming == nil && role == .source ? power.adapterName : nil
+        let adapterName = naming == nil && role == .source ? power.adapterModelName : nil
 
         var connection = Connection(
             id: port.id,
@@ -571,10 +571,18 @@ final class DeviceModel: ObservableObject {
         titledByAdapter: Bool = false
     ) -> String? {
         if role == .source {
+            // A source with no name of its own gets described by what it is
+            // doing instead. macOS calls a monitor feeding this Mac over
+            // Type-C a "usb host", which tells nobody anything; that it is
+            // pushing current without a PD contract tells them why it is 15 W.
+            let described = power.adapterModelName == nil
+                && port.negotiated != nil && !port.hasPDContract
+                ? "Type-C source, no PD contract"
+                : power.adapterName
             // The name is only worth repeating here when something else took
             // the title — otherwise the line would say the adapter twice.
             return [
-                titledByAdapter ? nil : power.adapterName,
+                titledByAdapter ? nil : described,
                 power.adapterWatts.map { String(format: "%.0f W max", $0) }
             ].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }

@@ -48,6 +48,9 @@ struct PowerSnapshot {
     /// What the adapter is rated for, as opposed to what it is delivering.
     var adapterWatts: Double?
     var adapterName: String?
+    /// The adapter as written on the adapter, set only when it publishes a real
+    /// one. `adapterName` falls back to a category where this is nil.
+    var adapterModelName: String?
     /// The adapter's own account of who built it. Apple's own bricks report
     /// "Apple Inc." here; third-party PD chargers report their own name, or
     /// nothing at all.
@@ -208,6 +211,10 @@ enum PowerMonitor {
             // is usually the far less useful "pd charger".
             let name = (adapter["Name"] as? String)?
                 .trimmingCharacters(in: .whitespaces).nilIfEmpty
+            // Only a real name is fit to title a card. Description is a
+            // category — "pd charger", or "usb host" for a monitor feeding the
+            // Mac over Type-C — and a card headed "Usb host" helps nobody.
+            snapshot.adapterModelName = name
             if let name {
                 snapshot.adapterName = name
             } else if let description = adapter["Description"] as? String, !description.isEmpty {

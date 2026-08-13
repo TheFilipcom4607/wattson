@@ -562,10 +562,13 @@ private struct ConnectionCard: View {
 
         if let port = connection.port {
             if let negotiated = port.negotiated {
-                rows.append(("Contract", String(
-                    format: "%.0f V / %.2f A (%.0f W)",
-                    negotiated.volts, negotiated.amps, negotiated.watts
-                )))
+                let figures = String(format: "%.0f V / %.2f A (%.0f W)",
+                                     negotiated.volts, negotiated.amps, negotiated.watts)
+                // Calling a Type-C current advertisement a "contract" would be
+                // the app agreeing that a handshake happened when none did.
+                rows.append(port.hasPDContract
+                    ? ("Contract", figures)
+                    : ("No contract", figures + " — Type-C current only, no PD handshake"))
             }
             if port.isSourcing, let volts = port.outputVolts, let amps = port.outputAmps {
                 rows.append(("Measured", String(format: "%.2f V / %.3f A", volts, amps)))
