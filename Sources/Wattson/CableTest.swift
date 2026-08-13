@@ -222,7 +222,13 @@ enum CableAnalysis {
                 hint: "This Mac reports that the cable has an e-marker but not what it says, so speed and wattage have to be established by negotiation instead."
             )
         }
-        let vendor = emarker.vendorID.map { String(format: "VID 0x%04X", $0) }
+        // The same table that names a device's maker can name a cable's, and a
+        // name beats four hex digits wherever the chip is one Wattson knows.
+        let vendor = emarker.vendorID.map { id -> String in
+            let hex = String(format: "0x%04X", id)
+            let resolved = Scanner.vendorName(forHex: hex)
+            return resolved == hex ? "VID \(hex)" : resolved
+        }
         return CableFinding(
             id: "chip", label: "Chip",
             value: ["Present, read in full", vendor].compactMap { $0 }.joined(separator: " · "),

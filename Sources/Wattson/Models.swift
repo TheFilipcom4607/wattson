@@ -37,6 +37,16 @@ struct DeviceNode: Identifiable, Hashable {
     /// The same allocation as the bus states it. `watts` is this at 5 V, but mA
     /// is the figure printed on the device's own spec sheet.
     var milliamps: Double?
+    /// What the device asked the bus for. Equal to `milliamps` on everything
+    /// healthy, so it only earns a line when the two disagree.
+    var requestedMilliamps: Double?
+    /// A hub's downstream current pool: what it has to hand out, as opposed to
+    /// what it draws. Hubs are excluded from the allocation total precisely
+    /// because their draw is this pool, and this is that number.
+    var hubBudgetMilliamps: Double?
+    /// The alternate mode a billboard device is there to report — "DisplayPort".
+    var altMode: String?
+    var altModeVersion: String?
     /// Real VBUS draw, set only when this device is alone on its port so the
     /// port's measurement can be attributed to it unambiguously.
     var measuredWatts: Double?
@@ -55,6 +65,53 @@ struct DeviceNode: Identifiable, Hashable {
     /// and the UI has to admit the difference rather than paper over it.
     var persistentKey: String { persistentID ?? id }
     var hasStableIdentity: Bool { persistentID != nil }
+
+    /// What this hub's own ports have granted out of its pool.
+    ///
+    /// Direct children only, and deliberately not recursive: a hub hanging off
+    /// this one takes its share as a single device and then hands out a pool of
+    /// its own.
+    ///
+    /// Nil rather than zero when nothing downstream states a draw. Plenty of
+    /// devices never do — a monitor's built-in hub can have five things on it
+    /// and not one of them reports an allocation — and "0 of 3100 mA granted"
+    /// would read as an empty hub rather than an unanswered question.
+    var grantedDownstreamMilliamps: Double? {
+        guard hubBudgetMilliamps != nil else { return nil }
+        let stated = children.compactMap(\.milliamps)
+        guard !stated.isEmpty else { return nil }
+        return stated.reduce(0, +)
+    }
+
+    /// "5.9 / 15.5 W" — short enough for the row's trailing slot, which is
+    /// empty on a hub because a hub reports no draw of its own.
+    ///
+    /// Withheld unless the downstream devices actually said what they take: a
+    /// lone pool figure in a slot that means "power drawn" everywhere else on
+    /// the panel would be read as this hub drawing it.
+    var hubBudgetShort: String? {
+        guard let pool = hubBudgetMilliamps, let granted = grantedDownstreamMilliamps else { return nil }
+        return String(format: "%.1f / %.1f W", granted * 5 / 1000, pool * 5 / 1000)
+    }
+
+    /// "1,184 of 3,100 mA granted" — what a hub has left to give, or just the
+    /// size of the pool where nothing downstream will say what it takes.
+    var hubBudgetSummary: String? {
+        guard let pool = hubBudgetMilliamps else { return nil }
+        guard let granted = grantedDownstreamMilliamps else {
+            return String(format: "%.0f mA to hand out — nothing here states its draw", pool)
+        }
+        return String(format: "%.0f of %.0f mA granted", granted, pool)
+    }
+
+    /// Set only where the device asked for more than the bus was willing to
+    /// give it — the case worth a line of its own.
+    var underfedSummary: String? {
+        guard let requested = requestedMilliamps, let granted = milliamps,
+              requested > granted + 1
+        else { return nil }
+        return String(format: "%.0f mA asked for, %.0f mA granted", requested, granted)
+    }
 
     /// "2109:0817" — the pair that names a model, as everyone writes it.
     var usbIDs: String? {
@@ -162,6 +219,12 @@ struct DeviceNode: Identifiable, Hashable {
                 ?? String(format: "%.1f W", watts)
             power.append(("Allocated", allocation))
         }
+        if let underfed = underfedSummary {
+            power.append(("Shortfall", underfed))
+        }
+        if let budget = hubBudgetSummary {
+            power.append(("Hands out", budget))
+        }
         if power.isEmpty {
             power.append(("Power", "Not reported"))
         }
@@ -170,6 +233,12 @@ struct DeviceNode: Identifiable, Hashable {
         var link: [(label: String, value: String)] = []
         if !speeds.isEmpty { link.append(("Speed", speeds.joined(separator: ", "))) }
         if let version { link.append(("Version", version)) }
+        if let altMode {
+            // A billboard device exists only to say this, so without it the row
+            // is a mystery entry named "BILLBOARD".
+            let stated = altModeVersion.map { "\(altMode) (Billboard \($0))" } ?? altMode
+            link.append(("Alt mode", stated))
+        }
         if !link.isEmpty { sections.append(DeviceSection(title: "Link", rows: link)) }
 
         var identity: [(label: String, value: String)] = []

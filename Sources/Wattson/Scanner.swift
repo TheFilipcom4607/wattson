@@ -64,6 +64,11 @@ enum Scanner {
                 node.watts = mA * 5 / 1000
                 node.milliamps = mA
             }
+            // What the device asked for, as opposed to what it was granted. The
+            // two match on everything healthy, so this is only worth a row when
+            // they diverge — which is the case worth knowing about.
+            node.requestedMilliamps = (properties["UsbPowerSinkCapability"] as? NSNumber)?.doubleValue
+            collectDownstreamFacts(of: service, into: &node)
 
             byLocation[location] = node
             order.append(location)
@@ -213,6 +218,44 @@ enum Scanner {
             }
         }
         return nil
+    }
+
+    /// Facts that live on the drivers macOS attached below a device rather than
+    /// on the device itself: a hub's downstream current pool, and a billboard's
+    /// account of the alternate mode it is there to describe.
+    private static func collectDownstreamFacts(of service: io_registry_entry_t, into node: inout DeviceNode, depth: Int = 0) {
+        guard depth < 3 else { return }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        while case let child = IOIteratorNext(iterator), child != 0 {
+            defer { IOObjectRelease(child) }
+            // Anything under a nested device describes that device, not this one.
+            if IOObjectConformsTo(child, "IOUSBHostDevice") != 0 { continue }
+
+            if let properties = properties(of: child) {
+                // The pool a hub has to hand out, which is the number the tree
+                // has never been able to show for the one kind of device whose
+                // whole job is handing power on.
+                if let pool = (properties["kUSBHubPowerSupply"] as? NSNumber)?.doubleValue, pool > 0 {
+                    node.hubBudgetMilliamps = pool
+                }
+                // A billboard device exists solely to report an alternate mode,
+                // which is why a dock publishes one at all.
+                if let mode = properties["UsbBillboardCurrentMode"] as? String, !mode.isEmpty {
+                    node.altMode = mode
+                }
+                if node.altMode == nil,
+                   let modes = properties["UsbBillboardSupportedModes"] as? [String], !modes.isEmpty {
+                    node.altMode = modes.joined(separator: ", ")
+                }
+                if let version = properties["UsbBillboardVersion"] as? String, !version.isEmpty {
+                    node.altModeVersion = version
+                }
+            }
+            collectDownstreamFacts(of: child, into: &node, depth: depth + 1)
+        }
     }
 
     /// Gathers driver class names below a device, stopping at the next USB device.

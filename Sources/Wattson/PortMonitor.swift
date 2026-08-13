@@ -120,6 +120,24 @@ struct PortInfo: Identifiable, Hashable {
     var negotiated: PowerOption?
     /// The cable's own chip, when the hardware has had reason to interrogate it.
     var emarker: CableEMarker?
+    /// How many times anything has ever been plugged into this port. Counted by
+    /// the port controller, so unlike Wattson's own log it survives reboots and
+    /// covers the whole life of the machine.
+    var connectionCount: Int?
+    /// Which end of the data link this Mac is. "Host" almost always.
+    var dataRole: String?
+    /// True when a transport is carried inside USB4/Thunderbolt rather than
+    /// running natively on its own wires.
+    var isTunnelled = false
+    /// macOS's own accessory policy, when it has something to say. The panel is
+    /// otherwise unable to explain a device that enumerates and then does
+    /// nothing because Privacy & Security declined it.
+    var restrictionState: String?
+    var restrictionProfile: String?
+    var isRestricted = false
+    /// "Policy Authorized" once the user has allowed the accessory; "Not
+    /// Required" for anything the policy does not cover.
+    var authorization: String?
 
     /// >3 A is only legal over a cable whose e-marker declares 5 A.
     var isFiveAmpRated: Bool {
@@ -269,6 +287,7 @@ enum PortMonitor {
             port.transportsSupported = properties["TransportsSupported"] as? [String] ?? []
             port.isActiveCable = properties["ActiveCable"] as? Bool ?? false
             port.isOpticalCable = properties["OpticalCable"] as? Bool ?? false
+            port.connectionCount = (properties["ConnectionCount"] as? NSNumber)?.intValue
 
             if let pins = properties["Pin Configuration"] as? [String: Any] {
                 port.pins = pins.compactMapValues { ($0 as? NSNumber)?.intValue }
@@ -276,6 +295,7 @@ enum PortMonitor {
 
             collectPowerDelivery(under: service, into: &port, depth: 0)
             collectEMarker(under: service, into: &port, depth: 0)
+            collectTransportState(under: service, into: &port, depth: 0)
             ports.append(port)
         }
 
@@ -302,6 +322,45 @@ enum PortMonitor {
                 port.negotiated = (properties["WinningPowerSourceOption"] as? [String: Any]).flatMap(option)
             }
             collectPowerDelivery(under: child, into: &port, depth: depth + 1)
+        }
+    }
+
+    /// Per-transport state, which hangs one level below the port as a child per
+    /// wire protocol — CC, USB2, DisplayPort.
+    ///
+    /// Each transport answers separately, and the answers are not equally
+    /// interesting: the CC line is never restricted and never needs authorising,
+    /// while the data transports are exactly where macOS's accessory policy
+    /// shows up. So take the most specific answer any transport gives rather
+    /// than whichever happens to be enumerated last.
+    private static func collectTransportState(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
+        guard depth < 3 else { return }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        while case let child = IOIteratorNext(iterator), child != 0 {
+            defer { IOObjectRelease(child) }
+            if IOObjectConformsTo(child, "IOPortTransportState") != 0, let properties = properties(of: child) {
+                if properties["Tunneled"] as? Bool == true { port.isTunnelled = true }
+                if properties["TRM_TransportRestricted"] as? Bool == true { port.isRestricted = true }
+                if let role = properties["DataRoleDescription"] as? String, !role.isEmpty {
+                    port.dataRole = role
+                }
+                if let state = properties["TRM_StateDescription"] as? String, !state.isEmpty {
+                    port.restrictionState = state
+                }
+                if let profile = properties["TRM_ProfileDescription"] as? String, !profile.isEmpty {
+                    port.restrictionProfile = profile
+                }
+                // "Not Required" is the default every idle transport reports;
+                // anything else is the policy actually having had an opinion.
+                if let status = properties["AuthorizationStatusDescription"] as? String,
+                   !status.isEmpty, status != "Not Required" || port.authorization == nil {
+                    port.authorization = status
+                }
+            }
+            collectTransportState(under: child, into: &port, depth: depth + 1)
         }
     }
 

@@ -583,6 +583,26 @@ private struct ConnectionCard: View {
                 rows.append(("Cable", port.cableWiringSummary))
                 rows.append(("Current", port.currentRating))
             }
+            // Why a device can enumerate and then do nothing: macOS declined
+            // it. Nothing else in the panel can account for that.
+            if port.isRestricted {
+                rows.append(("Blocked", [port.restrictionState, port.restrictionProfile]
+                    .compactMap { $0 }.joined(separator: " · ")))
+            } else if let authorization = port.authorization, authorization != "Not Required" {
+                rows.append(("Accessory", authorization))
+            }
+            if port.isTunnelled {
+                rows.append(("Tunnelled", "Carried inside USB4"))
+            }
+            // Host is what a Mac always is; the other way round is the news.
+            if let role = port.dataRole, role != "Host" {
+                rows.append(("Data role", role))
+            }
+            if let count = port.connectionCount {
+                rows.append(("Port use", count == 1
+                    ? "1 connection since new"
+                    : "\(count) connections since new"))
+            }
         }
 
         rows.append(contentsOf: connection.adapterRows)
@@ -685,6 +705,13 @@ private struct DeviceLine: View {
                             .foregroundStyle(entry.node.measuredWatts != nil
                                 ? AnyShapeStyle(.secondary)
                                 : AnyShapeStyle(.tertiary))
+                    } else if let budget = entry.node.hubBudgetShort {
+                        // A hub draws nothing of its own; what it has to hand
+                        // out is the number worth putting in the empty slot.
+                        Text(budget)
+                            .font(.system(size: 10))
+                            .monospacedDigit()
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 if let meta {
