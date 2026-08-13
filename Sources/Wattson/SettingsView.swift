@@ -108,7 +108,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 }
 
 extension Bundle {
+    /// Info.plist is the only place the version is written. The fallback is
+    /// deliberately not a number: a second copy of it here would be wrong the
+    /// moment the real one moves, and has been.
     var shortVersion: String {
-        object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     }
 }
