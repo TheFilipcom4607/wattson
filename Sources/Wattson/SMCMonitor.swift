@@ -79,6 +79,102 @@ enum SMCMonitor {
         .joined(separator: "\n")
     }
 
+    /// Every key the SMC will admit to, with its type, decoded value and raw
+    /// bytes.
+    ///
+    /// The keys Wattson reads had to be known in advance to be read at all, so
+    /// a capture that lists only those can confirm what is already understood
+    /// and never turn up anything new. This walks the controller's own key
+    /// index instead, which is the only way a future reading gets found rather
+    /// than guessed at.
+    ///
+    /// The raw bytes are printed next to every decoded value on purpose: the
+    /// type table below covers what Apple actually uses for power, and a
+    /// mistake in it should cost a misread line, not the evidence.
+    static func allKeyValues() -> String {
+        guard open() else { return "<AppleSMC could not be opened>" }
+        guard let (_, countBytes) = rawBytes(forKey: "#KEY"), countBytes.count >= 4 else {
+            return "<AppleSMC would not report its key count>"
+        }
+        let count = Int(UInt32(countBytes[0]) << 24 | UInt32(countBytes[1]) << 16
+            | UInt32(countBytes[2]) << 8 | UInt32(countBytes[3]))
+        guard count > 0, count < 10_000 else { return "<implausible key count \(count)>" }
+
+        var lines = ["\(count) keys reported by the controller"]
+        for index in 0..<count {
+            guard let key = keyName(at: index) else {
+                lines.append("[\(index)] <no key at this index>")
+                continue
+            }
+            guard let (info, bytes) = rawBytes(forKey: key) else {
+                lines.append("\(key)  <unreadable>")
+                continue
+            }
+            let hex = bytes.map { String(format: "%02X", $0) }.joined()
+            let type = typeCode(info.dataType).trimmingCharacters(in: .whitespaces)
+            let decoded = decode(bytes: bytes, type: typeCode(info.dataType)) ?? "—"
+            lines.append(String(format: "%@  type=%-4@ size=%u  value=%@  raw=%@",
+                                key, type as NSString, info.dataSize, decoded, hex))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// SMC scalars are big-endian, except `flt` which is a little-endian IEEE
+    /// float — the one exception that matters, since every power key is one.
+    private static func decode(bytes: [UInt8], type: String) -> String? {
+        func unsigned(_ count: Int) -> UInt64? {
+            guard bytes.count >= count else { return nil }
+            return bytes.prefix(count).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        }
+        switch type {
+        case "flt ":
+            guard bytes.count >= 4 else { return nil }
+            let bits = UInt32(bytes[0]) | UInt32(bytes[1]) << 8
+                | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
+            let value = Float(bitPattern: bits)
+            return value.isFinite ? String(value) : nil
+        case "ui8 ", "hex_": return unsigned(1).map(String.init)
+        case "ui16": return unsigned(2).map(String.init)
+        case "ui32": return unsigned(4).map(String.init)
+        case "si8 ": return bytes.first.map { String(Int8(bitPattern: $0)) }
+        case "si16":
+            return unsigned(2).map { String(Int16(bitPattern: UInt16(truncatingIfNeeded: $0))) }
+        case "sp78":
+            // Signed fixed point, eight fractional bits.
+            return unsigned(2).map {
+                String(Double(Int16(bitPattern: UInt16(truncatingIfNeeded: $0))) / 256)
+            }
+        case "flag": return bytes.first.map { $0 == 0 ? "false" : "true" }
+        case "ch8*":
+            let text = String(bytes: bytes.prefix { $0 != 0 }, encoding: .ascii)
+            return text?.isEmpty == false ? text : nil
+        default: return nil
+        }
+    }
+
+    private static func keyName(at index: Int) -> String? {
+        var input = ParamStruct()
+        input.data8 = readKeyFromIndex
+        input.data32 = UInt32(index)
+        guard let output = call(&input) else { return nil }
+        let key = output.key
+        let characters = [UInt8((key >> 24) & 0xFF), UInt8((key >> 16) & 0xFF),
+                          UInt8((key >> 8) & 0xFF), UInt8(key & 0xFF)]
+        guard characters.allSatisfy({ $0 >= 0x20 && $0 < 0x7F }) else { return nil }
+        return String(bytes: characters, encoding: .ascii)
+    }
+
+    private static func rawBytes(forKey key: String) -> (KeyInfo, [UInt8])? {
+        guard let info = info(for: key), info.dataSize > 0 else { return nil }
+        var input = ParamStruct()
+        input.key = code(key)
+        input.keyInfo = info
+        input.data8 = readBytes
+        guard let output = call(&input) else { return nil }
+        var raw = output.bytes
+        return (info, withUnsafeBytes(of: &raw) { Array($0.prefix(Int(min(info.dataSize, 32)))) })
+    }
+
     // MARK: - Connection
 
     private static var connection: io_connect_t = 0
@@ -144,6 +240,7 @@ enum SMCMonitor {
 
     private static let kernelIndex: UInt32 = 2
     private static let readBytes: UInt8 = 5
+    private static let readKeyFromIndex: UInt8 = 8
     private static let readKeyInfo: UInt8 = 9
 
     private typealias Bytes = (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,

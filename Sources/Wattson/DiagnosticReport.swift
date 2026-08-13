@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.ps
 
 /// Captures the original, unparsed sources Wattson reads. The app's own
 /// summaries are intentionally excluded: this is the evidence to inspect when
@@ -50,7 +51,15 @@ enum DiagnosticReport {
                    arguments: ["-l", "-w", "0", "-r", "-c", "AppleHPMInterface"], into: &report)
         rawSection("IOREG — IOPortTransportComponentCCUSBPDSOPp (e-marker source)",
                    command: "/usr/sbin/ioreg",
-                   arguments: ["-l", "-w", "0", "-r", "-c", "IOPortTransportComponentCCUSBPDSOPp"], into: &report)
+                   arguments: ["-l", "-w", "0", "-r", "-c", "IOPortTransportComponentCCUSBPDSOPp"],
+                   into: &report,
+                   emptyNote: """
+                   No e-marker node exists right now. This is the normal case, not a fault: the \
+                   chip in a cable is only interrogated when there is a reason to negotiate with \
+                   it, so the node appears when the cable is e-marked AND something is attached \
+                   at the far end. A capture of an e-marked cable lying idle in a port is empty \
+                   here — attach a charger or device to the other end and capture again.
+                   """)
 
         // PowerMonitor's unprocessed property dictionary, including adapter and
         // battery telemetry. AppleSMC telemetry itself is read through a private
@@ -63,6 +72,15 @@ enum DiagnosticReport {
                    arguments: ["-l", "-w", "0", "-r", "-c", "AppleSMC"], into: &report)
         report.append("\n=== APPLESMC KEYS — direct values read by SMCMonitor ===")
         report.append(SMCMonitor.diagnosticValues())
+        report.append("\n=== APPLESMC KEYS — every key the controller publishes ===")
+        report.append("Walked from the SMC's own key index, so this can show readings Wattson "
+            + "does not yet know to look for. Raw bytes are printed beside each decoded value.")
+        report.append(SMCMonitor.allKeyValues())
+
+        // The power-source API reaches the adapter by a different route than
+        // AppleSmartBattery, and the two do not always carry the same fields.
+        report.append("\n=== IOPS — IOPSCopyExternalPowerAdapterDetails (PowerMonitor cross-check) ===")
+        report.append(externalPowerAdapterDetails())
 
         rawSection("SYSCTL — hw.model (MacModel source)",
                    command: "/usr/sbin/sysctl", arguments: ["hw.model"], into: &report)
@@ -72,10 +90,34 @@ enum DiagnosticReport {
         return report.joined(separator: "\n") + "\n"
     }
 
-    private static func rawSection(_ title: String, command: String, arguments: [String], into report: inout [String]) {
+    private static func rawSection(
+        _ title: String,
+        command: String,
+        arguments: [String],
+        into report: inout [String],
+        emptyNote: String? = nil
+    ) {
         report.append("\n=== \(title) ===")
         report.append("$ \(command) \(arguments.joined(separator: " "))")
-        report.append(run(command, arguments: arguments))
+        let output = run(command, arguments: arguments)
+        report.append(output)
+        // An empty section reads as a broken capture unless it says otherwise.
+        if let emptyNote, output.hasPrefix("<no output") {
+            report.append("\nWHY THIS IS EMPTY: " + emptyNote)
+        }
+    }
+
+    /// What the power-source API says about the adapter, which is a different
+    /// path to the same hardware than the `AppleSmartBattery` dictionary above.
+    private static func externalPowerAdapterDetails() -> String {
+        guard let details = IOPSCopyExternalPowerAdapterDetails()?
+            .takeRetainedValue() as? [String: Any]
+        else {
+            return "<no adapter details; nothing is plugged in, or the API returned nothing>"
+        }
+        return details.keys.sorted()
+            .map { "\($0) = \(details[$0]!)" }
+            .joined(separator: "\n")
     }
 
     private static func run(_ executable: String, arguments: [String]) -> String {
@@ -90,10 +132,47 @@ enum DiagnosticReport {
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             let text = String(data: data, encoding: .utf8) ?? "<command returned non-UTF-8 data>"
-            return text.isEmpty ? "<no output; exit status \(process.terminationStatus)>" : text
+            return text.isEmpty
+                ? "<no output; exit status \(process.terminationStatus)>"
+                : collapsingHugeValues(text)
         } catch {
             return "<could not run command: \(error.localizedDescription)>"
         }
+    }
+
+    /// How much of one property value is worth keeping.
+    ///
+    /// Ordinary properties run to a few hundred characters. A handful do not:
+    /// a HID element table or an IOReportLegend is a single value of several
+    /// hundred kilobytes, and together they are about half of a capture. None
+    /// of them feed a power, cable or device reading.
+    private static let maximumValueLength = 4000
+
+    /// ioreg puts each property on one line, so an oversized value can be cut
+    /// without disturbing the structure around it. The key and the start of the
+    /// value survive, which is enough to recognise what was dropped and to go
+    /// back for it deliberately.
+    private static func collapsingHugeValues(_ text: String) -> String {
+        var lines: [String] = []
+        var omitted = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard line.count > maximumValueLength else {
+                lines.append(String(line))
+                continue
+            }
+            let rest = line.count - maximumValueLength
+            omitted += rest
+            lines.append(String(line.prefix(maximumValueLength))
+                + " …[\(rest) more characters of this value omitted]")
+        }
+        guard omitted > 0 else { return text }
+        lines.append("""
+
+        [\(omitted / 1024) KB of oversized property values omitted — HID element tables and \
+        IOReportLegend, which no Wattson reading uses. Raise \
+        DiagnosticReport.maximumValueLength to keep them in full.]
+        """)
+        return lines.joined(separator: "\n")
     }
 
     /// The exact URL resource keys VolumeMonitor asks Foundation for, emitted
