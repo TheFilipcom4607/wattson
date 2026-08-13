@@ -15,5 +15,9 @@ DerivedData/
 # Editor config
 .vscode/
 
+# Raw hardware captures. Tens of megabytes each, and they carry the serial
+# numbers of everything that was plugged in when they were taken.
+probes/
+
 # macOS
 .DS_Store
