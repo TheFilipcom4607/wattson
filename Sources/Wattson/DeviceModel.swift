@@ -6,6 +6,9 @@ import SwiftUI
 enum TitleMode: String, CaseIterable, Identifiable {
     case livePower
     case batteryFlow
+    case batteryLevel
+    case batteryLevelFlow
+    case batteryLevelPower
     case deviceCount
     case fastestLink
     case adapterRating
@@ -17,6 +20,9 @@ enum TitleMode: String, CaseIterable, Identifiable {
         switch self {
         case .livePower: return "Live wattage"
         case .batteryFlow: return "Battery flow"
+        case .batteryLevel: return "Battery level"
+        case .batteryLevelFlow: return "Level and flow"
+        case .batteryLevelPower: return "Level and wattage"
         case .deviceCount: return "Device count"
         case .fastestLink: return "Fastest link"
         case .adapterRating: return "Charger rating"
@@ -255,15 +261,8 @@ final class DeviceModel: ObservableObject {
             return nil
 
         case .livePower:
-            // Plugged in: what is coming from the wall. On battery: what is
-            // leaving the cell, which reads negative.
-            if power.externalConnected, let watts = power.inputWatts {
-                return format(watts)
-            }
-            if let watts = power.batteryWatts {
-                return format(watts)
-            }
-            return "—"
+            guard let watts = livePowerWatts else { return "—" }
+            return format(watts)
 
         case .batteryFlow:
             // Always signed: -10.27 W draining, +10.27 W charging. A resting
@@ -271,6 +270,29 @@ final class DeviceModel: ObservableObject {
             guard let watts = power.batteryWatts else { return "—" }
             if abs(watts) < 0.005 { return "0.00 W" }
             return String(format: "%+.2f W", watts)
+
+        case .batteryLevel:
+            guard let percent = power.batteryPercent else { return "—" }
+            return "\(percent)%"
+
+        case .batteryLevelFlow:
+            // Both halves of the question at once: how full, and which way it
+            // is going. One decimal rather than the two everywhere else — this
+            // is the widest thing Wattson can put in a menu bar, and the second
+            // decimal of a battery flow changes several times a second anyway.
+            guard let percent = power.batteryPercent else { return "—" }
+            guard let watts = power.batteryWatts else { return "\(percent)%" }
+            let flow = abs(watts) < 0.05 ? "0.0 W" : String(format: "%+.1f W", watts)
+            return "\(percent)% \(flow)"
+
+        case .batteryLevelPower:
+            // The same pairing, but the wattage is whichever one you would
+            // actually want: on a charger, what is arriving from the wall —
+            // charge going into the cell is the least of what that power is
+            // doing. On battery there is only one figure, so it is that one.
+            guard let percent = power.batteryPercent else { return title(for: .livePower) }
+            guard let watts = livePowerWatts else { return "\(percent)%" }
+            return "\(percent)% " + String(format: "%.1f W", watts)
 
         case .deviceCount:
             let count = result.deviceCount
