@@ -4,8 +4,9 @@
 <h1>Wattson</h1>
 
 <p>
-  <strong>Where your Mac's power is actually going,<br>
-  and what is on the other end of each USB-C cable.</strong>
+  <strong>A menu bar battery that says what it is actually doing.<br>
+  Then keeps going: where every watt lands, and what is on the<br>
+  other end of each USB-C cable.</strong>
 </p>
 
 <p>
@@ -14,20 +15,29 @@
   <img src="https://img.shields.io/badge/Apple%20silicon-required-1d1d1f?style=flat-square" alt="Apple silicon required">
 </p>
 
+<img src="docs/menu-bar.png" width="330" alt="A menu bar showing one Wattson item — a battery drawn about three quarters full, then 78% -4.9 W — where the system's own battery item would otherwise sit.">
+
 </div>
 
-Wattson reads the SMC and the IORegistry directly. `system_profiler SPUSBDataType`
-returns an empty list on recent macOS, so nothing here depends on it.
+Turn off the system's battery item and put this in its place. It is the same
+battery, drawn to the same proportions, in the same corner — except that it also
+tells you what the machine is drawing, switches Low Power Mode, and opens onto
+everything below.
+
+One item instead of two is worth real estate on a 13" menu bar.
 
 <div align="center">
-  <img src="docs/panel.png" width="440" alt="The Wattson panel: live wattage, a stacked power allocation bar split between the Mac and the battery, and the charger's card expanded onto its PD contract, what the cable is e-marked to carry, and the voltage ladder on offer.">
+  <img src="docs/panel-charging.jpeg" width="430" alt="The Wattson panel while charging: 45.28 W arriving, a battery gauge showing 78% with a charging bolt cut through it, 20.00 V at 2.264 A, a stacked bar splitting 6.9 W to the Mac and 38.4 W into the battery with 55 W of headroom left, a wattage graph, a Low Power Mode switch, and the charger's card expanded onto its PD contract and voltage ladder.">
 </div>
 
 <p align="center">
-  <sub>Charging at 8.83 W on a 20 V / 4.80 A contract. The charger's card is expanded onto its PD<br>
-  contract, the cable's own e-marker read off the wire, and the ladder of voltages the charger<br>
-  will offer. A dock's tree of devices sits below it.</sub>
+  <sub>The same item, opened. 45.28 W coming in on a 20 V contract, 38.4 W of it going<br>
+  into the cell, 55 W the charger still has spare — and the brick's own account of<br>
+  itself underneath.</sub>
 </p>
+
+Wattson reads the SMC and the IORegistry directly. `system_profiler SPUSBDataType`
+returns an empty list on recent macOS, so nothing here depends on it.
 
 ---
 
@@ -48,24 +58,49 @@ Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
 > The build is signed ad-hoc, so Gatekeeper will refuse the first launch. Right-click
 > the app in `/Applications` and choose **Open** once, and it will start normally after that.
 
+To use it as your battery item, set **Menu Bar** in Settings to **Level and
+wattage**, then turn the system's own battery off in System Settings ›
+Control Center › Battery.
+
 ---
 
-## What it shows
+## The battery item
+
+- **A battery drawn from the real figure.** SF Symbols ships battery art in five
+  steps — 0, 25, 50, 75, 100 — so a symbol can only ever round 61% to the nearest
+  quarter. This one is drawn, at the proportions of the battery macOS puts in its
+  own menu bar, with the charging bolt cut through the charge the way Apple's is,
+  and it turns yellow in Low Power Mode exactly as the system's does.
+- **A wattage beside the percentage**, which is the part the system item has never
+  told you. **Level and wattage** reads `78% 45.3 W` on a charger — what is arriving
+  from the wall — and falls back to the cell's own flow once you unplug.
+  **Level and flow** reads `78% +38.4 W` instead, always signed, for what the
+  battery itself is doing. Or **Battery level** for the plain percentage, and
+  **Icon only** for nothing but the battery.
+- **Low Power Mode**, switched from the panel. macOS exposes no API for it at all —
+  not in IOKit's headers, not in the PowerManagement plists — so `pmset` is the only
+  way in and only root may write it. The first use offers to install
+  `/etc/sudoers.d/wattson`, granting your account one command with two exact
+  argument lists and nothing else. It is checked with `visudo` before it goes in and
+  again once it is there, removed again if that second check fails, and revocable
+  from Settings.
+- **The charge again in the panel**, at a size you can read across a desk, next to
+  what is flowing and which way.
+
+<div align="center">
+  <img src="docs/panel-battery.jpeg" width="430" alt="The Wattson panel on battery: 5.28 W leaving the cell, a battery gauge at 78% marked draining, a four minute wattage graph peaking at 11.5 W, and a Low Power Mode switch.">
+</div>
+
+<p align="center">
+  <sub>On battery: what is leaving the cell, and the last four minutes of it.</sub>
+</p>
+
+---
+
+## Then everything else
 
 ### Power
 
-- **Live wattage** arriving from the charger, or leaving the battery, in the menu
-  bar and at the top of the panel.
-- **The charge itself**, as a battery drawn from the real figure rather than rounded
-  to the nearest quarter the way SF Symbols' five fixed pictures would, with the
-  bolt cut through it while power is going in. It is in the menu bar and again in
-  the panel at a size you can read at a glance. Set the menu bar to **Battery
-  level** in Settings and Wattson can take the place of the system's own battery
-  item, which is worth a lot of room on a 13" menu bar. Or pair the charge with a
-  wattage in the one item: **Level and flow** reads `76% +23.3 W`, the charge and
-  what the cell itself is doing, while **Level and wattage** reads `76% 53.9 W` on
-  a charger — what is arriving from the wall — and falls back to the battery's own
-  flow once you unplug.
 - **Where that power goes** — a single stacked bar splitting the Mac's own draw,
   attached accessories, and charge going into the battery, sized against what the
   charger can actually supply.
@@ -74,6 +109,11 @@ Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
 - **Which charger it is.** The brick's own name, who made it, its firmware and
   serial — with an Apple mark on the card when the adapter reports Apple as its
   manufacturer.
+- **A warning when the battery is going down on a charger**, which is the one
+  charging fault nothing else on the machine will tell you about. It reports
+  measured facts only — what is coming in against what the Mac is drawing — and
+  says nothing about what a bigger charger could have delivered: a small brick
+  holding a machine level is doing its job.
 
 ### Cables and ports
 
@@ -91,32 +131,33 @@ Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
 - **Volumes.** A drive mounted from a USB device is listed under it with its free
   space, a Show in Finder button, and an eject that unmounts the whole disk rather
   than one partition of a two-partition stick.
-- **Connection history**, and **notices** as things come and go — off by default,
-  switched on by kind in Settings: chargers, drives and cards, or everything else
-  that plugs in. Each one carries what is worth knowing rather than just a name: a
-  drive's free space and link speed, a charger's rating, the contract it agreed and
-  what it is actually delivering. A drive's notice appears the moment it is on the
-  bus and fills in its size in place when the volume mounts, so nothing waits and
-  nothing is announced twice. Notices show beside the menu bar, in Notification
-  Center, or both.
-- **Low Power Mode**, switched from the panel, with the battery turning yellow in
-  the menu bar while it is on exactly as the system's own does — the one thing the
-  system battery menu could do that Wattson could not. macOS exposes no API for it at
-  all: not in IOKit's headers, not in the PowerManagement plists. `pmset` is the
-  only way in and only root may write it, so the first use offers to install
-  `/etc/sudoers.d/wattson`, granting your account one command with two exact
-  argument lists and nothing else. It is checked with `visudo` before it goes in
-  and again once it is there, removed again if that second check fails, and
-  revocable from Settings.
-- **A warning when the battery is going down on a charger**, which is the one
-  charging fault nothing else on the machine will tell you about. It reports
-  measured facts only — what is coming in against what the Mac is drawing — and
-  says nothing about what a bigger charger could have delivered: a small brick
-  holding a machine level is doing its job.
-- **Search**, once the tree is long enough to need it.
+- **Connection history**, and **search** once the tree is long enough to need it.
 
 <div align="center">
-  <img src="docs/inspector.png" width="460" alt="A card reader in the tree expanded in place into sections: Power showing 896 mA at 5 V, Link showing Super Speed at 5 Gbps, Identity showing vendor, VID/PID and serial number, Volumes showing the mounted SD card with its free space and buttons to reveal it in Finder or eject it, and History showing when it was last connected and disconnected.">
+  <img src="docs/panel-devices.png" width="400" alt="The panel with a dock attached: the charger's card above, then a USB-C port card carrying a tree of a USB 2.0 hub with a billboard device, a second hub and a wireless receiver, and a USB 3.0 hub with gigabit ethernet and a card reader, each with its link speed, vendor and measured draw.">
+</div>
+
+<p align="center">
+  <sub>A port and everything behind it, with what each one is drawing.</sub>
+</p>
+
+### Notices
+
+Off by default, switched on by kind in Settings: chargers, drives and cards, or
+everything else that plugs in. Each notice carries what is worth knowing rather
+than just a name — a drive's free space and link speed, a charger's rating, the
+contract it agreed and what it is actually delivering.
+
+Nothing waits and nothing is announced twice: a drive's notice appears the moment
+it is on the bus and fills in its size in place when the volume mounts. They show
+beside the menu bar, in Notification Center, or both.
+
+<div align="center">
+  <img src="docs/notice.png" width="430" alt="A notice under the menu bar reading 100 W charger attached, and beneath it 20.0 V / 0.35 A, drawing 7.1 W, MagSafe 3.">
+</div>
+
+<div align="center">
+  <img src="docs/inspector.png" width="440" alt="A card reader in the tree expanded in place into sections: Power showing 896 mA at 5 V, Link showing Super Speed at 5 Gbps, Identity showing vendor, VID/PID and serial number, Volumes showing the mounted SD card with its free space and buttons to reveal it in Finder or eject it, and History showing when it was last connected and disconnected.">
 </div>
 
 <p align="center">
