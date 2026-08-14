@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cableTest = CableTestWindowController()
     private let diagnostics = DiagnosticsWindowController()
     private var cancellables = Set<AnyCancellable>()
+    /// What the button's image is currently drawn from.
+    private var shownIcon: MenuBarIcon?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -141,11 +143,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
 
-        button.image = NSImage(
-            systemSymbolName: model.symbolName,
-            accessibilityDescription: "Wattson"
-        )
-        button.image?.isTemplate = true
+        // The battery is drawn rather than looked up, and this runs on every
+        // power tick, so redraw only when the picture would actually differ.
+        let icon = model.menuBarIcon
+        if icon != shownIcon {
+            shownIcon = icon
+            switch icon {
+            case .battery(let percent, let charging, let lowPower):
+                button.image = BatteryGlyph.menuBarImage(
+                    percent: percent, charging: charging, lowPower: lowPower
+                )
+            case .symbol(let name):
+                button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Wattson")
+                button.image?.isTemplate = true
+            }
+        }
 
         if let title = model.titleText {
             button.title = " " + title

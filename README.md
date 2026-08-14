@@ -56,6 +56,16 @@ Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
 
 - **Live wattage** arriving from the charger, or leaving the battery, in the menu
   bar and at the top of the panel.
+- **The charge itself**, as a battery drawn from the real figure rather than rounded
+  to the nearest quarter the way SF Symbols' five fixed pictures would, with the
+  bolt cut through it while power is going in. It is in the menu bar and again in
+  the panel at a size you can read at a glance. Set the menu bar to **Battery
+  level** in Settings and Wattson can take the place of the system's own battery
+  item, which is worth a lot of room on a 13" menu bar. Or pair the charge with a
+  wattage in the one item: **Level and flow** reads `76% +23.3 W`, the charge and
+  what the cell itself is doing, while **Level and wattage** reads `76% 53.9 W` on
+  a charger — what is arriving from the wall — and falls back to the battery's own
+  flow once you unplug.
 - **Where that power goes** — a single stacked bar splitting the Mac's own draw,
   attached accessories, and charge going into the battery, sized against what the
   charger can actually supply.

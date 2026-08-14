@@ -25,6 +25,13 @@ enum TitleMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// What sits to the left of the title in the menu bar.
+enum MenuBarIcon: Equatable {
+    /// The battery, filled to the level it is actually at.
+    case battery(percent: Int, charging: Bool, lowPower: Bool)
+    case symbol(String)
+}
+
 @MainActor
 final class DeviceModel: ObservableObject {
     @Published private(set) var result = ScanResult()
@@ -284,14 +291,37 @@ final class DeviceModel: ObservableObject {
         String(format: "%.2f W", watts)
     }
 
-    var symbolName: String {
+    /// The one live figure: what is coming from the wall while plugged in, and
+    /// what is leaving the cell when not — which reads negative, as it should.
+    private var livePowerWatts: Double? {
+        if power.externalConnected, let watts = power.inputWatts { return watts }
+        return power.batteryWatts
+    }
+
+    /// Power going into the cell, which is what the bolt in the icon means.
+    /// The registry's own flag lags a plug or unplug by a tick, so the measured
+    /// flow decides wherever there is one.
+    var isCharging: Bool {
+        if let watts = power.batteryWatts, abs(watts) > 0.05 { return watts > 0 }
+        return power.isCharging
+    }
+
+    /// Every power mode gets the real battery, drawn to its actual level, so
+    /// the item can stand in for the system's own battery in the menu bar. The
+    /// two modes that are about what is plugged in rather than about power keep
+    /// their connector.
+    var menuBarIcon: MenuBarIcon {
         switch titleMode {
-        case .livePower, .adapterRating:
-            return power.externalConnected ? "powerplug.fill" : "battery.100percent"
-        case .batteryFlow:
-            return (power.batteryWatts ?? 0) > 0.05 ? "battery.100percent.bolt" : "battery.100percent"
+        case .deviceCount, .fastestLink:
+            return .symbol("cable.connector")
+        case .adapterRating where power.externalConnected:
+            return .symbol("powerplug.fill")
         default:
-            return "cable.connector"
+            guard let percent = power.batteryPercent else {
+                // A Mac with no battery to draw.
+                return .symbol(power.externalConnected ? "powerplug.fill" : "bolt.slash")
+            }
+            return .battery(percent: percent, charging: isCharging, lowPower: isLowPowerOn)
         }
     }
 
