@@ -1,16 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// What changed, in the fewest words that stay true.
-struct ToastContent: Equatable {
-    let symbol: String
-    let title: String
-    let detail: String?
-}
-
 /// A brief panel under the menu bar saying what was just plugged in or pulled.
 ///
-/// Drawn in-app rather than through `UNUserNotificationCenter`: Wattson is
+/// Drawn in-app rather than only through `UNUserNotificationCenter`: Wattson is
 /// ad-hoc signed, and user notifications want a real bundle identity and an
 /// authorisation prompt. This needs neither, and it appears next to the menu bar
 /// item it is talking about.
@@ -20,15 +13,23 @@ final class ToastPresenter {
     private var hosting: NSHostingView<ToastView>?
     private var dismissal: Task<Void, Never>?
 
+    /// A notice still waiting on its facts stays up longer: it would otherwise
+    /// spend most of its life on screen saying it does not know yet.
     private static let visibleFor: TimeInterval = 3.5
-    private static let width: CGFloat = 260
+    private static let pendingFor: TimeInterval = 8
+    /// Sized against a system notification banner, which is what it sits
+    /// beside — a narrower panel in the same corner reads as a lesser one.
+    static let width: CGFloat = 344
 
     /// True while a toast is on screen, so the caller can merge into it rather
     /// than stacking a second one on top.
     var isShowing: Bool { panel?.isVisible ?? false }
+    /// Which notice that is, so an update can be told from a new arrival.
+    private(set) var showingID: String?
 
-    func show(_ content: ToastContent) {
-        let view = ToastView(content: content) { [weak self] in self?.dismiss() }
+    func show(_ notice: Notice) {
+        showingID = notice.id
+        let view = ToastView(content: notice) { [weak self] in self?.dismiss() }
         let panel = panel ?? makePanel()
         self.panel = panel
 
@@ -49,8 +50,9 @@ final class ToastPresenter {
         panel.orderFrontRegardless()
 
         dismissal?.cancel()
+        let showFor = notice.isPending ? Self.pendingFor : Self.visibleFor
         dismissal = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.visibleFor * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(showFor * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.dismiss()
         }
@@ -59,6 +61,7 @@ final class ToastPresenter {
     func dismiss() {
         dismissal?.cancel()
         dismissal = nil
+        showingID = nil
         guard let panel, panel.isVisible else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
@@ -96,92 +99,41 @@ final class ToastPresenter {
     }
 }
 
-private struct ToastView: View {
-    let content: ToastContent
+struct ToastView: View {
+    let content: Notice
     let dismiss: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
+        HStack(alignment: .top, spacing: 11) {
             Image(systemName: content.symbol)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .symbolVariant(.fill)
                 .foregroundStyle(.secondary)
-                .frame(width: 16)
+                .frame(width: 21)
+                .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(content.title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .lineLimit(2)
                 if let detail = content.detail {
                     Text(detail)
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(3)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(width: 260, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 11).fill(.regularMaterial))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(width: ToastPresenter.width, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
         .overlay(
-            RoundedRectangle(cornerRadius: 11).strokeBorder(.quaternary, lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary, lineWidth: 0.5)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 11))
+        .contentShape(RoundedRectangle(cornerRadius: 14))
         .onTapGesture(perform: dismiss)
     }
 }
 
-/// Turns a batch of arrivals and departures into one line of text.
-///
-/// Attaching a seven-port hub fires a notification per downstream device, so the
-/// interesting case is not "one device" — it is "a hub and everything behind
-/// it", which has to read as a single event.
-enum ToastSummary {
-    static func content(arrived: [DeviceNode], left: [DeviceNode]) -> ToastContent? {
-        if !arrived.isEmpty {
-            var content = summarise(arrived, verb: "attached")
-            if !left.isEmpty {
-                let removals = left.count == 1
-                    ? "\(left[0].name) removed"
-                    : "\(left.count) devices removed"
-                content = ToastContent(
-                    symbol: content.symbol,
-                    title: content.title,
-                    detail: [content.detail, removals].compactMap { $0 }.joined(separator: " · ")
-                )
-            }
-            return content
-        }
-        guard !left.isEmpty else { return nil }
-        return summarise(left, verb: "removed")
-    }
-
-    private static func summarise(_ nodes: [DeviceNode], verb: String) -> ToastContent {
-        if nodes.count == 1, let node = nodes.first {
-            return ToastContent(
-                symbol: node.symbolName,
-                title: "\(node.name) \(verb)",
-                detail: [node.typeLabel, node.linkSummary, node.vendor]
-                    .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
-            )
-        }
-        // A hub in the batch names the whole batch: it is the thing that was
-        // physically plugged in, and the rest came with it.
-        if let hub = nodes.first(where: { $0.typeLabel == "Hub" }) {
-            let others = nodes.count - 1
-            return ToastContent(
-                symbol: hub.symbolName,
-                title: "\(hub.name) \(verb)",
-                detail: others == 1 ? "1 device" : "\(others) devices"
-            )
-        }
-        return ToastContent(
-            symbol: "cable.connector",
-            title: "\(nodes.count) devices \(verb)",
-            detail: nodes.prefix(3).map(\.name).joined(separator: ", ")
-                + (nodes.count > 3 ? "…" : "")
-        )
-    }
-}

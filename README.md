@@ -91,8 +91,28 @@ Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
 - **Volumes.** A drive mounted from a USB device is listed under it with its free
   space, a Show in Finder button, and an eject that unmounts the whole disk rather
   than one partition of a two-partition stick.
-- **Connection history**, and optionally a small notice as things are plugged in and
-  pulled out — off by default, in Settings.
+- **Connection history**, and **notices** as things come and go — off by default,
+  switched on by kind in Settings: chargers, drives and cards, or everything else
+  that plugs in. Each one carries what is worth knowing rather than just a name: a
+  drive's free space and link speed, a charger's rating, the contract it agreed and
+  what it is actually delivering. A drive's notice appears the moment it is on the
+  bus and fills in its size in place when the volume mounts, so nothing waits and
+  nothing is announced twice. Notices show beside the menu bar, in Notification
+  Center, or both.
+- **Low Power Mode**, switched from the panel, with the battery turning yellow in
+  the menu bar while it is on exactly as the system's own does — the one thing the
+  system battery menu could do that Wattson could not. macOS exposes no API for it at
+  all: not in IOKit's headers, not in the PowerManagement plists. `pmset` is the
+  only way in and only root may write it, so the first use offers to install
+  `/etc/sudoers.d/wattson`, granting your account one command with two exact
+  argument lists and nothing else. It is checked with `visudo` before it goes in
+  and again once it is there, removed again if that second check fails, and
+  revocable from Settings.
+- **A warning when the battery is going down on a charger**, which is the one
+  charging fault nothing else on the machine will tell you about. It reports
+  measured facts only — what is coming in against what the Mac is drawing — and
+  says nothing about what a bigger charger could have delivered: a small brick
+  holding a machine level is doing its job.
 - **Search**, once the tree is long enough to need it.
 
 <div align="center">

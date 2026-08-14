@@ -164,9 +164,21 @@ final class DeviceModel: ObservableObject {
     /// Diagnostic capture is deliberately opt-in: its reports can be large and
     /// may contain serial numbers and other hardware identifiers.
     @Published var showDebugOptions: Bool { didSet { save(showDebugOptions, "showDebugOptions") } }
-    /// Off unless asked for: an app that starts talking after an update is an
-    /// app people quit.
-    @Published var announceChanges: Bool { didSet { save(announceChanges, "announceChanges") } }
+    // Which changes are worth saying out loud, and where. All off unless asked
+    // for: an app that starts talking after an update is an app people quit.
+    @Published var announcePower: Bool { didSet { save(announcePower, "announcePower") } }
+    @Published var announceStorage: Bool { didSet { save(announceStorage, "announceStorage") } }
+    @Published var announceDevices: Bool { didSet { save(announceDevices, "announceDevices") } }
+    /// Only ever fires on a battery that is genuinely going down while plugged
+    /// in — never on the charger merely being smaller than the Mac could use.
+    @Published var warnBatteryDrain: Bool { didSet { save(warnBatteryDrain, "warnBatteryDrain") } }
+    @Published var announceContract: Bool { didSet { save(announceContract, "announceContract") } }
+    @Published var noticesInPanel: Bool {
+        didSet { save(noticesInPanel, "noticesInPanel"); applyNoticeDelivery() }
+    }
+    @Published var noticesInCenter: Bool {
+        didSet { save(noticesInCenter, "noticesInCenter"); applyNoticeDelivery() }
+    }
 
     private static let titleModeKey = "titleMode"
 
@@ -178,6 +190,14 @@ final class DeviceModel: ObservableObject {
     private static func flag(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
     }
+
+    /// A notice switch that has never been set inherits `announceChanges`, the
+    /// single on/off these grew out of, so anyone who had announcements on
+    /// keeps them rather than having them silently turned off by an update.
+    private static func noticeFlag(_ key: String, default fallback: Bool? = nil) -> Bool {
+        if let stored = UserDefaults.standard.object(forKey: key) as? Bool { return stored }
+        return fallback ?? UserDefaults.standard.bool(forKey: "announceChanges")
+    }
     private var watcher: HotplugWatcher?
     private var powerWatcher: PowerSourceWatcher?
     private var pendingRescan: Task<Void, Never>?
@@ -188,12 +208,24 @@ final class DeviceModel: ObservableObject {
 
     /// The first scan of a run is a baseline, not a burst of arrivals.
     private var hasScanned = false
-    private let toasts = ToastPresenter()
+    private let notices = NoticeCenter()
     private var toastTask: Task<Void, Never>?
     private var pendingArrivals: [DeviceNode] = []
     private var pendingDepartures: [DeviceNode] = []
     private var shownArrivals: [DeviceNode] = []
     private var shownDepartures: [DeviceNode] = []
+    /// The notice currently on screen, and the storage device it is still
+    /// waiting on the volume for.
+    private var openNotice: Notice?
+    private var awaitingVolume: DeviceNode?
+    private var volumeWait: Task<Void, Never>?
+
+    // What the last sample said, so this one can be compared against it.
+    private var lastPower: PowerSnapshot?
+    /// When the battery started going down on a charger, and whether that has
+    /// already been said. One notice per stretch of draining, not one a second.
+    private var drainingSince: Date?
+    private var drainAnnounced = false
 
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.titleModeKey) ?? ""
@@ -204,7 +236,13 @@ final class DeviceModel: ObservableObject {
         showDevices = Self.flag("showDevices")
         showVendors = Self.flag("showVendors")
         showDebugOptions = UserDefaults.standard.bool(forKey: "showDebugOptions")
-        announceChanges = UserDefaults.standard.bool(forKey: "announceChanges")
+        announcePower = Self.noticeFlag("announcePower")
+        announceStorage = Self.noticeFlag("announceStorage")
+        announceDevices = Self.noticeFlag("announceDevices")
+        warnBatteryDrain = Self.noticeFlag("warnBatteryDrain", default: true)
+        announceContract = Self.noticeFlag("announceContract", default: true)
+        noticesInPanel = Self.noticeFlag("noticesInPanel", default: true)
+        noticesInCenter = Self.noticeFlag("noticesInCenter", default: false)
 
         watcher = HotplugWatcher { [weak self] in
             self?.scheduleRescan()
@@ -241,6 +279,11 @@ final class DeviceModel: ObservableObject {
             }
             volumeObservers.append(observer)
         }
+
+        applyNoticeDelivery()
+        // The user can withdraw Notification Center's permission in System
+        // Settings without the app hearing about it, so ask at every launch.
+        notices.refreshAuthorization()
 
         refreshLaunchAtLogin()
         refreshLowPower()
@@ -408,10 +451,19 @@ final class DeviceModel: ObservableObject {
         )
 
         // Nothing to announce to somebody already looking at the list.
-        guard announceChanges, !isPresented else { return }
-        pendingArrivals += arrived
-        pendingDepartures += left
+        guard !isPresented else { return }
+        // Filtered before they are summarised, not after: with storage on and
+        // devices off, a hub carrying one flash drive should say "flash drive",
+        // not "hub, 4 devices" with the drive buried in the count.
+        pendingArrivals += arrived.filter(announces)
+        pendingDepartures += left.filter(announces)
+        guard !pendingArrivals.isEmpty || !pendingDepartures.isEmpty else { return }
         scheduleToast()
+    }
+
+    /// Whether this device's comings and goings are switched on.
+    private func announces(_ node: DeviceNode) -> Bool {
+        node.isStorage ? announceStorage : announceDevices
     }
 
     /// A hub announces its downstream devices in a burst, which would put one
@@ -427,19 +479,101 @@ final class DeviceModel: ObservableObject {
     }
 
     private func presentToast() {
-        if toasts.isShowing {
+        // Merging into a notice that is still up keeps its id, so the second
+        // rescan of one plug-in updates the first notice rather than posting a
+        // second banner beside it.
+        var id = "devices.\(Date().timeIntervalSince1970)"
+        if let open = openNotice, open.category != .power {
             pendingArrivals = unique(shownArrivals + pendingArrivals)
             pendingDepartures = unique(shownDepartures + pendingDepartures)
+            id = open.id
         }
-        guard let content = ToastSummary.content(
-            arrived: pendingArrivals, left: pendingDepartures
+        guard let notice = NoticeBuilder.devices(
+            arrived: pendingArrivals,
+            left: pendingDepartures,
+            id: id,
+            volumes: { [weak self] in self?.volumes(for: $0) ?? [] }
         ) else { return }
 
         shownArrivals = pendingArrivals
         shownDepartures = pendingDepartures
         pendingArrivals = []
         pendingDepartures = []
-        toasts.show(content)
+
+        // A drive is announced the moment it is on the bus, and told again in
+        // place once its volume mounts and its size is known.
+        awaitingVolume = notice.isPending ? shownArrivals.first : nil
+        post(notice)
+        scheduleVolumeGiveUp(for: notice)
+    }
+
+    /// A disk that never mounts — locked, unformatted, or simply slow — must
+    /// not leave a notice reading "reading volume…" for good, least of all in
+    /// Notification Center where it would sit in the history saying it.
+    private func scheduleVolumeGiveUp(for notice: Notice) {
+        volumeWait?.cancel()
+        guard notice.isPending else { return }
+        volumeWait = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, let self, var open = self.openNotice,
+                  open.id == notice.id, open.isPending
+            else { return }
+            self.awaitingVolume = nil
+            open.isPending = false
+            open.detail = open.detail?
+                .replacingOccurrences(of: " · reading volume…", with: "")
+                .nilIfEmpty
+            self.post(open)
+        }
+    }
+
+    /// The volume behind a notice that is waiting for one has mounted.
+    private func fillInVolume() {
+        guard let node = awaitingVolume, let open = openNotice, open.isPending,
+              !volumes(for: node).isEmpty
+        else { return }
+        awaitingVolume = nil
+        volumeWait?.cancel()
+        guard let filled = NoticeBuilder.devices(
+            arrived: shownArrivals, left: shownDepartures, id: open.id,
+            volumes: { [weak self] in self?.volumes(for: $0) ?? [] }
+        ) else { return }
+        post(filled)
+    }
+
+    /// One way in for every notice, so the open one is always known.
+    private func post(_ notice: Notice) {
+        openNotice = notice
+        notices.post(notice)
+    }
+
+    private func applyNoticeDelivery() {
+        notices.delivery = NoticeDelivery(
+            panel: noticesInPanel, notificationCenter: noticesInCenter
+        )
+    }
+
+    /// Turning Notification Center on is what asks for permission — never at
+    /// launch, when the app has nothing to say yet. Hands back whether it will
+    /// actually deliver, so the switch can go back if it will not.
+    func enableNotificationCenter(_ completion: @escaping (Bool) -> Void) {
+        notices.authorizeNotificationCenter { granted in
+            if !granted { self.noticesInCenter = false }
+            // Proof the pipe works, sent down the pipe. Notification Center can
+            // be authorised and still deliver nothing — a Focus, a Do Not
+            // Disturb schedule — and a switch that silently does nothing is
+            // worse than one that says so.
+            if granted {
+                self.post(Notice(
+                    id: "notices.enabled",
+                    category: .power,
+                    symbol: "bell.badge.fill",
+                    title: "Notifications are on",
+                    detail: "This is what Wattson's notices will look like."
+                ))
+            }
+            completion(granted)
+        }
     }
 
     private func unique(_ nodes: [DeviceNode]) -> [DeviceNode] {
@@ -451,6 +585,7 @@ final class DeviceModel: ObservableObject {
 
     private func readVolumes() {
         volumes = volumeMonitor.read()
+        fillInVolume()
     }
 
     func volumes(for node: DeviceNode) -> [VolumeInfo] {
@@ -519,7 +654,96 @@ final class DeviceModel: ObservableObject {
                 history.removeFirst(history.count - Self.historyLimit)
             }
         }
+
+        notePowerChanges()
     }
+
+    // MARK: - What the power did
+
+    /// Charger events, which no notification used to cover at all: nothing on
+    /// the bus changes when a charger is plugged in, so the device diff never
+    /// saw one.
+    private func notePowerChanges() {
+        defer { lastPower = power }
+        // The first sample of a run is the baseline. Whatever was already
+        // plugged in at launch did not just happen.
+        guard let previous = lastPower else { return }
+        guard announcePower, !isPresented else { return }
+
+        if power.externalConnected, !previous.externalConnected {
+            drainingSince = nil
+            drainAnnounced = false
+            post(NoticeBuilder.adapterAttached(power, settled: adapterHasSettled))
+            return
+        }
+
+        if !power.externalConnected, previous.externalConnected {
+            drainingSince = nil
+            drainAnnounced = false
+            post(NoticeBuilder.adapterRemoved(power))
+            return
+        }
+
+        guard power.externalConnected else { return }
+
+        // The contract lands a moment after the plug does. Fill the notice that
+        // said "negotiating…" in place, rather than posting a second one.
+        if let open = openNotice, open.id == NoticeBuilder.adapterNoticeID, open.isPending {
+            if adapterHasSettled {
+                post(NoticeBuilder.adapterAttached(power, settled: true))
+            }
+            return
+        }
+
+        noteContractChange(from: previous)
+        noteDrainOnCharger()
+    }
+
+    /// Whether there is anything worth printing yet: a rating, and either a
+    /// contract or measurable power coming in.
+    private var adapterHasSettled: Bool {
+        guard power.adapterWatts != nil else { return false }
+        return power.negotiatedContract != nil || (power.inputWatts ?? 0) > 0.05
+    }
+
+    /// The same charger changing rails under the same cable. Only a real change
+    /// of voltage counts — the current wanders by a few milliamps constantly.
+    private func noteContractChange(from previous: PowerSnapshot) {
+        guard announceContract,
+              let volts = power.inputVolts, volts > 1,
+              let was = previous.inputVolts, was > 1,
+              abs(volts - was) > 0.75
+        else { return }
+        post(NoticeBuilder.contractChanged(
+            fromVolts: was, toVolts: volts, amps: power.inputAmps, watts: power.inputWatts
+        ))
+    }
+
+    /// The battery going down while plugged in.
+    ///
+    /// Measured drain only, held for a while before it is said: a spike under
+    /// load dips into the battery for a second or two on any charger, and a Mac
+    /// held at a charge limit sits at zero flow rather than negative, so neither
+    /// gets a warning. This never compares the charger against what the Mac
+    /// could theoretically take.
+    private func noteDrainOnCharger() {
+        guard warnBatteryDrain else { return }
+        guard let watts = power.batteryWatts, watts < -Self.drainWatts else {
+            // Steady again: arm the warning for the next stretch of draining.
+            drainingSince = nil
+            drainAnnounced = false
+            return
+        }
+        let since = drainingSince ?? Date()
+        drainingSince = since
+        guard !drainAnnounced, Date().timeIntervalSince(since) >= Self.drainSeconds else { return }
+        drainAnnounced = true
+        post(NoticeBuilder.drainingOnCharger(power))
+    }
+
+    /// A drain worth the name, and how long it has to hold for.
+    private static let drainWatts: Double = 1
+    private static let drainSeconds: TimeInterval = 45
 
     // MARK: - Attributing measured power to a device
 

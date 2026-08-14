@@ -3,6 +3,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: DeviceModel
+    /// Set when macOS refuses, which it does silently and permanently once the
+    /// user has said no — the switch alone would look broken.
+    @State private var deniedNotifications = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -29,7 +32,58 @@ struct SettingsView: View {
                     .disabled(!model.showDevices)
                     .padding(.leading, 16)
                 Toggle("This Mac's limits", isOn: $model.showPortLimits)
-                Toggle("Announce devices as they connect", isOn: $model.announceChanges)
+            }
+
+            group("Notifications") {
+                Toggle("Chargers", isOn: $model.announcePower)
+                Toggle("Warn when the battery drains on a charger", isOn: $model.warnBatteryDrain)
+                    .disabled(!model.announcePower)
+                    .padding(.leading, 16)
+                Toggle("Contract changes", isOn: $model.announceContract)
+                    .disabled(!model.announcePower)
+                    .padding(.leading, 16)
+                Toggle("Drives and cards", isOn: $model.announceStorage)
+                Toggle("Everything else that plugs in", isOn: $model.announceDevices)
+
+                Divider().padding(.vertical, 2)
+
+                Toggle("Beside the menu bar", isOn: $model.noticesInPanel)
+                Toggle("In Notification Center", isOn: Binding(
+                    get: { model.noticesInCenter },
+                    set: { wanted in
+                        model.noticesInCenter = wanted
+                        // Permission is asked for here, when it is turned on,
+                        // and the switch goes back by itself if it is refused.
+                        guard wanted else { return }
+                        model.enableNotificationCenter { granted in
+                            deniedNotifications = !granted
+                        }
+                    }
+                ))
+                if deniedNotifications {
+                    Text("macOS is not letting Wattson post notifications. Turn them on for Wattson in System Settings › Notifications.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if model.lowPower.isSupported {
+                group("Low Power Mode") {
+                    if model.lowPowerPromptless == true {
+                        Text("The switch in the panel can change Low Power Mode without asking for a password.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Revoke Permission…") { model.removeLowPowerRule() }
+                            .disabled(model.lowPowerBusy)
+                    } else {
+                        Text("Changing Low Power Mode needs root, which macOS grants no other way. The switch in the panel will offer to set this up.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
 
             group("Startup") {
