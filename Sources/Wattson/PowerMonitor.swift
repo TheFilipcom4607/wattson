@@ -88,12 +88,6 @@ struct PowerSnapshot {
             .joined(separator: " · ")
     }
 
-    /// "Battery 76% · charging"
-    var batterySummary: String? {
-        let charge = batteryPercent.map { "Battery \($0)%" }
-        return [charge, batteryState].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
-    }
-
     /// Where the power is going, as segments of one bar.
     ///
     /// This replaced a stack of "System draw / accessories / Mac itself /

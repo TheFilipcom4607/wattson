@@ -63,18 +63,83 @@ struct MenuContentView: View {
 
             headline
 
-            if let allocation = model.power.allocation {
-                if allocation.isInformative {
-                    AllocationBar(allocation: allocation)
-                    AllocationLegend(allocation: allocation)
-                }
-                caption(for: allocation)
+            if let allocation = model.power.allocation, allocation.isInformative {
+                AllocationBar(allocation: allocation)
+                AllocationLegend(allocation: allocation, headroom: allocation.headroom)
             }
 
             if model.showSparkline, model.history.count > 1 {
                 Sparkline(samples: model.history).padding(.top, 2)
             }
+
+            if model.lowPower.isSupported { lowPowerRow }
         }
+    }
+
+    /// The one control the system's battery menu has that this panel did not.
+    private var lowPowerRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "tortoise.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("Low Power Mode")
+                    .font(.system(size: 11))
+                if model.lowPower.isSplit {
+                    // Two sources set differently is a state this one switch
+                    // cannot describe, so it says so rather than lying.
+                    Text(model.power.externalConnected ? "on charger only" : "on battery only")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                if model.lowPowerBusy {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                }
+                Toggle("", isOn: Binding(
+                    get: { model.lowPower.inEffect(externalConnected: model.power.externalConnected) },
+                    set: { toggleLowPower(to: $0) }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .disabled(model.lowPowerBusy)
+            }
+            if let error = model.lowPowerError {
+                Text(error)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// Writing this setting needs root, so the first use explains exactly what
+    /// is about to be installed before any password is asked for.
+    private func toggleLowPower(to on: Bool) {
+        guard model.lowPowerPromptless == false else {
+            model.setLowPower(on, installingIfNeeded: false)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Wattson needs permission to change Low Power Mode"
+        alert.informativeText = """
+        macOS only lets root change this setting, and there is no API for it — \
+        pmset is the only way in.
+
+        Wattson can install a rule granting your account permission to run that \
+        one command, with those exact arguments, without a password. It grants \
+        nothing else, and you can remove it in Settings at any time.
+
+        \(model.lowPowerRule)
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Set Up…")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.setLowPower(on, installingIfNeeded: true)
     }
 
     /// The live wattage, as the one number you read at a glance.
@@ -94,7 +159,36 @@ struct MenuContentView: View {
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Spacer()
+            Spacer(minLength: 8)
+
+            // The charge rides in the space beside the wattage rather than on a
+            // row of its own: on battery that space is empty, and a row that is
+            // three quarters air is a row not worth its height.
+            if let percent = model.power.batteryPercent {
+                BatteryGauge(
+                    percent: percent, charging: model.isCharging, lowPower: model.isLowPowerOn
+                )
+                    // A shape has no baseline of its own, so it would sit on
+                    // the wattage's — which puts it a little low against digits.
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
+                Text("\(percent)")
+                    .font(.system(size: 23, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                Text("%")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if let state = batteryStateText {
+                    Text(state)
+                        .font(.system(size: 10))
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        // Plugged in, this shares the row with the volts and
+                        // amps; it gives way rather than pushing them off.
+                        .minimumScaleFactor(0.75)
+                        .layoutPriority(-1)
+                }
+            }
 
             if let volts = model.power.inputVolts, let amps = model.power.inputAmps,
                model.power.externalConnected {
@@ -105,38 +199,21 @@ struct MenuContentView: View {
                 .font(.system(size: 11, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+                .padding(.leading, 6)
             }
         }
     }
 
-    private func caption(for allocation: PowerAllocation) -> some View {
-        HStack(spacing: 6) {
-            if let battery = batteryCaption(for: allocation) {
-                Text(battery)
-            }
-            Spacer()
-            if let headroom = allocation.headroom {
-                Text(String(format: "%.0f W headroom", headroom))
-            }
-        }
-        .font(.system(size: 10))
-        .monospacedDigit()
-        .foregroundStyle(.tertiary)
-        .lineLimit(1)
-    }
-
-    /// "Battery 80% · draining · -2.31 W"
-    ///
-    /// The flow is spelled out whenever the bar is not already carrying it —
-    /// which is exactly the case where it matters most: plugged in, but the
-    /// charger is not keeping up and the cell is still going down.
-    private func batteryCaption(for allocation: PowerAllocation) -> String? {
-        guard let summary = model.power.batterySummary else { return nil }
-        let inBar = allocation.segments.contains { $0.id == "battery" }
+    /// "charging", or "draining · -2.31 W" whenever the flow is not already on
+    /// screen — which is exactly the case where it matters most: plugged in,
+    /// but the charger is not keeping up and the cell is still going down.
+    private var batteryStateText: String? {
+        guard let state = model.power.batteryState else { return nil }
+        let inBar = model.power.allocation?.segments.contains { $0.id == "battery" } ?? false
         guard model.power.externalConnected, !inBar,
               let watts = model.power.batteryWatts, abs(watts) > 0.05
-        else { return summary }
-        return summary + String(format: " · %+.2f W", watts)
+        else { return state }
+        return state + String(format: " · %+.2f W", watts)
     }
 
     // MARK: - Body
@@ -329,6 +406,10 @@ private struct AllocationBar: View {
 
 private struct AllocationLegend: View {
     let allocation: PowerAllocation
+    /// What the charger still has spare. It belongs on the key rather than on a
+    /// row of its own: it is a fact about this bar, and it is what fills the
+    /// empty tail the bar already draws.
+    let headroom: Double?
 
     var body: some View {
         // Fixed gaps with a trailing Spacer: distributing them edge to edge
@@ -343,7 +424,12 @@ private struct AllocationLegend: View {
                     Text(String(format: "%.1f W", segment.watts)).monospacedDigit()
                 }
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+            if let headroom {
+                Text(String(format: "%.0f W headroom", headroom))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
         }
         .font(.system(size: 10))
         .lineLimit(1)
