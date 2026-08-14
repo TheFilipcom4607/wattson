@@ -13,7 +13,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private let model = DeviceModel()
     private let settings = SettingsWindowController()
-    private let cableTest = CableTestWindowController()
     private let diagnostics = DiagnosticsWindowController()
     private var cancellables = Set<AnyCancellable>()
     /// What the button's image is currently drawn from.
@@ -34,11 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     self.popover.performClose(nil)
                     self.settings.show(model: self.model)
-                },
-                onOpenCableTest: { [weak self] in
-                    guard let self else { return }
-                    self.popover.performClose(nil)
-                    self.cableTest.show(model: self.model)
                 },
                 onOpenDiagnostics: { [weak self] in
                     guard let self else { return }
@@ -89,7 +83,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Test Your Cable…", action: #selector(openCableTest), keyEquivalent: "")
         if model.showDebugOptions {
             appMenu.addItem(withTitle: "Capture Raw Hardware Data…", action: #selector(openDiagnostics), keyEquivalent: "")
         }
@@ -130,10 +123,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settings.show(model: model)
-    }
-
-    @objc private func openCableTest() {
-        cableTest.show(model: model)
     }
 
     @objc private func openDiagnostics() {

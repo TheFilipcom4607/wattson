@@ -4,7 +4,6 @@ import SwiftUI
 struct MenuContentView: View {
     @ObservedObject var model: DeviceModel
     var onOpenSettings: () -> Void = {}
-    var onOpenCableTest: () -> Void = {}
     var onOpenDiagnostics: () -> Void = {}
     var onClose: () -> Void = {}
 
@@ -351,7 +350,6 @@ struct MenuContentView: View {
     /// places to change one thing.
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
-            MenuButton(title: "Test Your Cable…", action: onOpenCableTest)
             if model.showDebugOptions {
                 MenuButton(title: "Capture Raw Hardware Data…", action: onOpenDiagnostics)
             }
