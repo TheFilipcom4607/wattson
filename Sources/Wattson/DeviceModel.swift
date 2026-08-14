@@ -47,7 +47,95 @@ final class DeviceModel: ObservableObject {
 
     /// Set while the popover is open, so power sampling can speed up.
     @Published var isPresented = false {
-        didSet { restartPowerTimer() }
+        didSet {
+            restartPowerTimer()
+            // Reading it costs a subprocess, so it is read when somebody is
+            // about to look at it rather than on the timer.
+            if isPresented { refreshLowPower() }
+        }
+    }
+
+    // MARK: - Low Power Mode
+
+    @Published private(set) var lowPower = LowPowerMode.State()
+    /// Set while the authorisation dialog is up or pmset is running.
+    @Published private(set) var lowPowerBusy = false
+    @Published var lowPowerError: String?
+    /// Whether the switch can work without a password. Nil until asked.
+    @Published private(set) var lowPowerPromptless: Bool?
+
+    func refreshLowPower() {
+        Task.detached(priority: .userInitiated) {
+            let state = LowPowerMode.read()
+            let promptless = state.isSupported ? LowPowerMode.isPromptless : false
+            await MainActor.run {
+                self.lowPower = state
+                self.lowPowerPromptless = promptless
+            }
+        }
+    }
+
+    /// Turns Low Power Mode on or off for both power sources.
+    ///
+    /// `setUp` runs first when the rule is not in place — the caller has
+    /// explained what is about to be installed and been told to go ahead.
+    func setLowPower(_ on: Bool, installingIfNeeded setUp: Bool) {
+        guard !lowPowerBusy else { return }
+        lowPowerBusy = true
+        lowPowerError = nil
+        Task.detached(priority: .userInitiated) {
+            let failure: String?
+            var needsSetup = false
+            do {
+                if setUp { try LowPowerMode.installPromptless() }
+                try LowPowerMode.set(on)
+                failure = nil
+            } catch LowPowerMode.Failure.cancelled {
+                // Closing the dialog is an answer. Nothing to report.
+                failure = nil
+            } catch LowPowerMode.Failure.needsSetup {
+                // The rule is not doing its job whatever the file system says,
+                // so the next flip of the switch offers to put it right.
+                needsSetup = true
+                failure = LowPowerMode.Failure.needsSetup.localizedDescription
+            } catch {
+                failure = error.localizedDescription
+            }
+            let state = LowPowerMode.read()
+            let promptless = needsSetup ? false : LowPowerMode.isPromptless
+            await MainActor.run {
+                self.lowPower = state
+                self.lowPowerPromptless = promptless
+                self.lowPowerError = failure
+                self.lowPowerBusy = false
+            }
+        }
+    }
+
+    /// Hands the rule back, for Settings to show and for the alert to quote.
+    var lowPowerRule: String { LowPowerMode.rule() }
+
+    func removeLowPowerRule() {
+        guard !lowPowerBusy else { return }
+        lowPowerBusy = true
+        lowPowerError = nil
+        Task.detached(priority: .userInitiated) {
+            let failure: String?
+            do {
+                try LowPowerMode.removePromptless()
+                failure = nil
+            } catch LowPowerMode.Failure.cancelled {
+                failure = nil
+            } catch {
+                failure = error.localizedDescription
+            }
+            let promptless = LowPowerMode.isPromptless
+            await MainActor.run {
+                self.lowPowerPromptless = promptless
+                self.lowPowerError = failure
+                self.lowPowerBusy = false
+            }
+        }
     }
 
     @Published var titleMode: TitleMode {
@@ -81,6 +169,7 @@ final class DeviceModel: ObservableObject {
     private var powerWatcher: PowerSourceWatcher?
     private var pendingRescan: Task<Void, Never>?
     private var powerTimer: Timer?
+    private var lowPowerTimer: Timer?
     private let volumeMonitor = VolumeMonitor()
     private var volumeObservers: [NSObjectProtocol] = []
 
@@ -111,9 +200,21 @@ final class DeviceModel: ObservableObject {
 
         // Plug and unplug should register immediately, not on the next tick.
         powerWatcher = PowerSourceWatcher { [weak self] in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in
+                self?.refresh()
+                // The setting is kept per power source, so which one is in
+                // force just changed.
+                self?.refreshLowPower()
+            }
         }
         powerWatcher?.start()
+
+        // Low Power Mode can equally be switched from Control Center or System
+        // Settings, and the icon has to follow it there. One subprocess every
+        // half minute is cheap enough to keep the colour honest.
+        lowPowerTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshLowPower() }
+        }
 
         // Mounting is its own event: an encrypted volume can be unlocked long
         // after the drive it lives on was plugged in, and no USB event fires.
@@ -129,6 +230,7 @@ final class DeviceModel: ObservableObject {
         }
 
         refreshLaunchAtLogin()
+        refreshLowPower()
         refresh()
         restartPowerTimer()
     }
@@ -191,6 +293,12 @@ final class DeviceModel: ObservableObject {
         default:
             return "cable.connector"
         }
+    }
+
+    /// Low Power Mode as it applies right now, which is what the icon colours
+    /// itself for.
+    var isLowPowerOn: Bool {
+        lowPower.inEffect(externalConnected: power.externalConnected)
     }
 
     // MARK: - Sampling
