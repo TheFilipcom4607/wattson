@@ -142,6 +142,11 @@ Control Center › Battery.
   the cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
+- **A cable test that admits what it cannot know.** Many Macs report that a cable
+  carries an e-marker and never what the chip says, so every figure is a floor the
+  hardware has cleared — the lowest of what the cable, the charger and the Mac will
+  each do. A 240 W cable on a 100 W charger reads as 100 W, and the test says so
+  rather than implying it has read the cable.
 
 ### Devices
 

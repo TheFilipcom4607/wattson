@@ -76,6 +76,9 @@ struct CableAssessment {
     /// How far the guided test has got.
     var provedData: Bool
     var provedPower: Bool
+    /// Set where this Mac admits the cable carries an e-marker but not what it
+    /// says, which puts a ceiling on everything the test can ever establish.
+    var chipContentsWithheld = false
 }
 
 enum CableAnalysis {
@@ -263,7 +266,8 @@ enum CableAnalysis {
             findings: findings,
             isConnected: true,
             provedData: provedData,
-            provedPower: provedPower
+            provedPower: provedPower,
+            chipContentsWithheld: evidence.emarker?.contentsWithheld == true
         )
     }
 

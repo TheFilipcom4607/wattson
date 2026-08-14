@@ -94,8 +94,15 @@ struct CableTestView: View {
 
             // Says where the numbers come from without contradicting the Chip
             // row, which reports per-Mac whether the e-marker could be read.
+            //
+            // Where the chip is sealed, that limit is worth stating outright
+            // rather than leaving somebody to work out why a 240 W cable keeps
+            // reading as 100 W: what is measured is the lowest of three things,
+            // and only one of them is the cable.
             Label(
-                "Nothing here is read off the cable's printing. Every row is either negotiated by the hardware or reported by the cable's own chip.",
+                test.assessment.chipContentsWithheld
+                    ? "This Mac reports that a cable carries an e-marker, never what it says. So every row is a floor the hardware has cleared through this cable — the lowest of what the cable, the charger and this Mac will each do. A bigger charger raises that floor; nothing an app can reach states the cable's own rating."
+                    : "Nothing here is read off the cable's printing. Every row is either negotiated by the hardware or reported by the cable's own chip.",
                 systemImage: "info.circle"
             )
             .font(.system(size: 10))
