@@ -166,10 +166,32 @@ struct SettingsView: View {
 
             Divider()
 
-            Text("Wattson \(Bundle.main.shortVersion)")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            credits
         }
+    }
+
+    /// What this is, where it lives, and who to blame for it.
+    private var credits: some View {
+        HStack(spacing: 6) {
+            Link(destination: URL(string: "https://github.com/TheFilipcom4607/wattson")!) {
+                HStack(spacing: 5) {
+                    GitHubMark()
+                        .frame(width: 12, height: 12)
+                    Text("Wattson \(Bundle.main.shortVersion)")
+                }
+            }
+            .help("github.com/TheFilipcom4607/wattson")
+
+            Text("·").foregroundStyle(.tertiary)
+
+            HStack(spacing: 0) {
+                Text("made by ").foregroundStyle(.secondary)
+                Link("thefilip", destination: URL(string: "https://github.com/TheFilipcom4607")!)
+                    .help("github.com/TheFilipcom4607")
+            }
+        }
+        .font(.system(size: 11))
+        .buttonStyle(.plain)
     }
 
     private func preview(_ mode: TitleMode) -> String {
@@ -308,5 +330,49 @@ extension Bundle {
     /// moment the real one moves, and has been.
     var shortVersion: String {
         object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+}
+
+/// GitHub's own mark, from octicons' `mark-github-16`.
+///
+/// Its one elliptical arc is converted to cubics here, so this stays a plain
+/// SwiftUI path with nothing to parse at runtime and no asset to ship.
+private struct GitHubMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        // The mark is drawn on a 16 x 16 box, scaled into whatever it is given.
+        func p(_ x: CGFloat, _ y: CGFloat, _ rect: CGRect) -> CGPoint {
+            CGPoint(x: rect.minX + x / 16 * rect.width, y: rect.minY + y / 16 * rect.height)
+        }
+        var path = Path()
+        path.move(to: p(6.766, 11.328, rect))
+        path.addCurve(to: p(3.25, 7.672, rect), control1: p(4.703, 11.078, rect), control2: p(3.25, 9.594, rect))
+        path.addCurve(to: p(4, 5.484, rect), control1: p(3.25, 6.891, rect), control2: p(3.531, 6.047, rect))
+        path.addCurve(to: p(4.063, 3.422, rect), control1: p(3.797, 4.969, rect), control2: p(3.828, 3.875, rect))
+        path.addCurve(to: p(6.031, 4.125, rect), control1: p(4.688, 3.344, rect), control2: p(5.531, 3.672, rect))
+        path.addCurve(to: p(8.016, 3.844, rect), control1: p(6.625, 3.938, rect), control2: p(7.25, 3.844, rect))
+        path.addCurve(to: p(9.969, 4.109, rect), control1: p(8.781, 3.844, rect), control2: p(9.406, 3.938, rect))
+        path.addCurve(to: p(11.938, 3.422, rect), control1: p(10.453, 3.672, rect), control2: p(11.313, 3.344, rect))
+        path.addCurve(to: p(11.984, 5.469, rect), control1: p(12.156, 3.844, rect), control2: p(12.188, 4.937, rect))
+        path.addCurve(to: p(12.75, 7.672, rect), control1: p(12.484, 6.062, rect), control2: p(12.75, 6.859, rect))
+        path.addCurve(to: p(9.203, 11.312, rect), control1: p(12.75, 9.594, rect), control2: p(11.297, 11.047, rect))
+        path.addCurve(to: p(10.093, 13.266, rect), control1: p(9.734, 11.656, rect), control2: p(10.093, 12.406, rect))
+        path.addLine(to: p(10.093, 14.891, rect))
+        path.addCurve(to: p(10.953, 15.438, rect), control1: p(10.093, 15.359, rect), control2: p(10.484, 15.625, rect))
+        path.addCurve(to: p(16, 8.03, rect), control1: p(13.781, 14.359, rect), control2: p(16, 11.53, rect))
+        path.addCurve(to: p(7.984, 0, rect), control1: p(16, 3.61, rect), control2: p(12.406, 0, rect))
+        path.addCurve(to: p(0, 8.031, rect), control1: p(3.563, 0, rect), control2: p(0, 3.61, rect))
+        path.addCurve(to: p(5.172, 15.453, rect), control1: p(-0.009, 11.347, rect), control2: p(2.058, 14.314, rect))
+        path.addCurve(to: p(6, 14.906, rect), control1: p(5.594, 15.609, rect), control2: p(6, 15.328, rect))
+        path.addLine(to: p(6, 13.656, rect))
+        path.addCurve(to: p(5.25, 13.812, rect), control1: p(5.781, 13.75, rect), control2: p(5.5, 13.812, rect))
+        path.addCurve(to: p(3.172, 12.203, rect), control1: p(4.219, 13.812, rect), control2: p(3.61, 13.25, rect))
+        path.addCurve(to: p(2.453, 11.484, rect), control1: p(3, 11.781, rect), control2: p(2.812, 11.531, rect))
+        path.addCurve(to: p(2.203, 11.297, rect), control1: p(2.266, 11.469, rect), control2: p(2.203, 11.391, rect))
+        path.addCurve(to: p(2.828, 10.969, rect), control1: p(2.203, 11.109, rect), control2: p(2.516, 10.969, rect))
+        path.addCurve(to: p(4.078, 11.829, rect), control1: p(3.281, 10.969, rect), control2: p(3.672, 11.25, rect))
+        path.addCurve(to: p(5.109, 12.484, rect), control1: p(4.391, 12.281, rect), control2: p(4.718, 12.484, rect))
+        path.addCurve(to: p(6.109, 11.984, rect), control1: p(5.5, 12.484, rect), control2: p(5.75, 12.344, rect))
+        path.addCurve(to: p(6.766, 11.328, rect), control1: p(6.375, 11.719, rect), control2: p(6.579, 11.484, rect))
+        return path
     }
 }

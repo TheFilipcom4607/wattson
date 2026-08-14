@@ -77,6 +77,16 @@ Control Center › Battery.
   **Level and flow** reads `78% +38.4 W` instead, always signed, for what the
   battery itself is doing. Or **Battery level** for the plain percentage, and
   **Icon only** for nothing but the battery.
+
+  <div align="center">
+    <img src="docs/settings-menu-bar.png" width="380" alt="Wattson's Settings window on the Menu Bar pane: a radio list of Live wattage, Battery flow, Battery level, Level and flow, Level and wattage, Device count, Fastest link, Charger rating and Icon only, each showing live what it would put in the menu bar.">
+  </div>
+
+  <p align="center">
+    <sub>Every mode previews what it would actually put up there, live — the labels<br>
+    alone never told you what you would get.</sub>
+  </p>
+
 - **Low Power Mode**, switched from the panel. macOS exposes no API for it at all —
   not in IOKit's headers, not in the PowerManagement plists — so `pmset` is the only
   way in and only root may write it. The first use offers to install
@@ -84,6 +94,15 @@ Control Center › Battery.
   argument lists and nothing else. It is checked with `visudo` before it goes in and
   again once it is there, removed again if that second check fails, and revocable
   from Settings.
+
+  <div align="center">
+    <img src="docs/menu-bar-low-power.png" width="330" alt="The same menu bar item with Low Power Mode on: the battery is filled yellow, reading 80% -7.3 W.">
+  </div>
+
+  <p align="center">
+    <sub>Low Power Mode on. The item goes yellow, the way the system's own battery does.</sub>
+  </p>
+
 - **The charge again in the panel**, at a size you can read across a desk, next to
   what is flowing and which way.
 
@@ -154,7 +173,13 @@ beside the menu bar, in Notification Center, or both.
 
 <div align="center">
   <img src="docs/notice.png" width="430" alt="A notice under the menu bar reading 100 W charger attached, and beneath it 20.0 V / 0.35 A, drawing 7.1 W, MagSafe 3.">
+  <img src="docs/notice-drive.png" width="430" alt="A notice reading Type-C attached, and beneath it 226.36 GB free of 256.63 GB at 5 Gbps.">
 </div>
+
+<p align="center">
+  <sub>What was plugged in, and the part of it worth knowing: a charger's contract and<br>
+  what it is delivering, a drive's free space and how fast the link came up.</sub>
+</p>
 
 <div align="center">
   <img src="docs/inspector.png" width="440" alt="A card reader in the tree expanded in place into sections: Power showing 896 mA at 5 V, Link showing Super Speed at 5 Gbps, Identity showing vendor, VID/PID and serial number, Volumes showing the mounted SD card with its free space and buttons to reveal it in Finder or eject it, and History showing when it was last connected and disconnected.">
