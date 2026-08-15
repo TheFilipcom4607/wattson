@@ -1,21 +1,31 @@
 import AppKit
 import SwiftUI
 
+/// What the panel remembers between openings.
+///
+/// This was `@State` on `MenuContentView` and had to leave it: the view and its
+/// whole SwiftUI backing are now thrown away when the panel closes, to give the
+/// memory back, and `@State` would go with them — every card collapsed and the
+/// search box cleared on each reopen. Held here instead, on an object the app
+/// delegate keeps, it costs a few strings and outlives the view that shows it.
+final class PanelState: ObservableObject {
+    /// Which connection cards are showing their detail rows. Keyed by the
+    /// connection's stable id so a rescan does not collapse them.
+    @Published var expanded: Set<String> = []
+    /// The same, for individual devices in the tree.
+    @Published var expandedDevices: Set<String> = []
+    @Published var query = ""
+    /// Measured height of the scrolling body: a ScrollView has no intrinsic
+    /// height and the popover sizes to fit, so it would collapse to nothing.
+    @Published var bodyHeight: CGFloat = 0
+}
+
 struct MenuContentView: View {
     @ObservedObject var model: DeviceModel
+    @ObservedObject var ui: PanelState
     var onOpenSettings: () -> Void = {}
     var onOpenDiagnostics: () -> Void = {}
     var onClose: () -> Void = {}
-
-    /// Which connection cards are showing their detail rows. Keyed by the
-    /// connection's stable id so a rescan does not collapse them.
-    @State private var expanded: Set<String> = []
-    /// The same, for individual devices in the tree.
-    @State private var expandedDevices: Set<String> = []
-    @State private var query = ""
-    /// Measured height of the scrolling body: a ScrollView has no intrinsic
-    /// height and the popover sizes to fit, so it would collapse to nothing.
-    @State private var bodyHeight: CGFloat = 0
 
     private static let width: CGFloat = 380
 
@@ -38,10 +48,10 @@ struct MenuContentView: View {
         // Escape clears the query first and closes the panel only once there is
         // nothing left to clear — a focused text field changes what Escape means.
         .onExitCommand {
-            if query.isEmpty {
+            if ui.query.isEmpty {
                 onClose()
             } else {
-                query = ""
+                ui.query = ""
             }
         }
     }
@@ -224,13 +234,13 @@ struct MenuContentView: View {
         return max(160, min(560, visible - 380))
     }
 
-    private var overflows: Bool { bodyHeight > maxBodyHeight + 1 }
+    private var overflows: Bool { ui.bodyHeight > maxBodyHeight + 1 }
 
     /// Only once the tree is big enough to need it. A permanent search box over
     /// a four-row list is an admission that the list is too long, on a panel
     /// where it usually is not.
     private var showsSearch: Bool {
-        model.showDevices && (model.result.deviceCount > 8 || !query.isEmpty)
+        model.showDevices && (model.result.deviceCount > 8 || !ui.query.isEmpty)
     }
 
     private var searchField: some View {
@@ -238,11 +248,11 @@ struct MenuContentView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.tertiary)
-            TextField("Search devices", text: $query)
+            TextField("Search devices", text: $ui.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
-            if !query.isEmpty {
-                Button { query = "" } label: {
+            if !ui.query.isEmpty {
+                Button { ui.query = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
@@ -274,9 +284,9 @@ struct MenuContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 if model.showDevices {
-                    let connections = model.connections(matching: query)
+                    let connections = model.connections(matching: ui.query)
                     if connections.isEmpty {
-                        Text(query.isEmpty ? "Nothing connected" : "No device matches “\(query)”")
+                        Text(ui.query.isEmpty ? "Nothing connected" : "No device matches “\(ui.query)”")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -286,14 +296,14 @@ struct MenuContentView: View {
                             connection: connection,
                             showCable: model.showCable,
                             context: rowContext,
-                            isExpanded: expanded.contains(connection.id),
+                            isExpanded: ui.expanded.contains(connection.id),
                             toggle: { toggle(connection.id) },
-                            expandedDevices: expandedDevices,
+                            expandedDevices: ui.expandedDevices,
                             toggleDevice: { id in
-                                if expandedDevices.contains(id) {
-                                    expandedDevices.remove(id)
+                                if ui.expandedDevices.contains(id) {
+                                    ui.expandedDevices.remove(id)
                                 } else {
-                                    expandedDevices.insert(id)
+                                    ui.expandedDevices.insert(id)
                                 }
                             }
                         )
@@ -316,11 +326,11 @@ struct MenuContentView: View {
                 }
             )
         }
-        .frame(height: min(max(bodyHeight, 24), maxBodyHeight))
+        .frame(height: min(max(ui.bodyHeight, 24), maxBodyHeight))
         // Fade the last few points so "there is more below" is visible before
         // you happen to scroll; overlay scrollers show nothing at rest.
         .mask(overflows ? AnyView(bottomFade) : AnyView(Color.black))
-        .onPreferenceChange(BodyHeightKey.self) { bodyHeight = $0 }
+        .onPreferenceChange(BodyHeightKey.self) { ui.bodyHeight = $0 }
     }
 
     private var bottomFade: some View {
@@ -336,10 +346,10 @@ struct MenuContentView: View {
     }
 
     private func toggle(_ id: String) {
-        if expanded.contains(id) {
-            expanded.remove(id)
+        if ui.expanded.contains(id) {
+            ui.expanded.remove(id)
         } else {
-            expanded.insert(id)
+            ui.expanded.insert(id)
         }
     }
 

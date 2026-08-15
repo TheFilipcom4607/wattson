@@ -62,13 +62,28 @@ final class ToastPresenter {
         dismissal?.cancel()
         dismissal = nil
         showingID = nil
-        guard let panel, panel.isVisible else { return }
+        guard let panel, panel.isVisible else {
+            release()
+            return
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             panel.animator().alphaValue = 0
-        } completionHandler: { [weak panel] in
+        } completionHandler: { [weak self, weak panel] in
             panel?.orderOut(nil)
+            Task { @MainActor in self?.release() }
         }
+    }
+
+    /// A toast is on screen for three and a half seconds and then not again for
+    /// hours. Keeping its window and hosting view alive in between costs a
+    /// backing store and a SwiftUI view tree for nothing — `show` builds both
+    /// again in well under the time the fade out takes.
+    private func release() {
+        guard !isShowing else { return }
+        panel?.contentView = nil
+        hosting = nil
+        panel = nil
     }
 
     private func makePanel() -> NSPanel {

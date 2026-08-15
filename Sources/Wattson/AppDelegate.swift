@@ -10,8 +10,13 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var popover: NSPopover!
+    /// Made on the first opening and kept for good; its contents come and go
+    /// with each opening instead. See `panelPopover` and `teardownPanelContent`.
+    private var popover: NSPopover?
     private let model = DeviceModel()
+    /// The panel's expansion and search state, kept out here so it survives the
+    /// view being discarded.
+    private let panelState = PanelState()
     private let settings = SettingsWindowController()
     private let diagnostics = DiagnosticsWindowController()
     private var cancellables = Set<AnyCancellable>()
@@ -25,33 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.action = #selector(togglePopover)
         // Monospaced digits stop the item resizing every time the wattage ticks.
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-
-        let hosting = NSHostingController(
-            rootView: MenuContentView(
-                model: model,
-                onOpenSettings: { [weak self] in
-                    guard let self else { return }
-                    self.popover.performClose(nil)
-                    self.settings.show(model: self.model)
-                },
-                onOpenDiagnostics: { [weak self] in
-                    guard let self else { return }
-                    self.popover.performClose(nil)
-                    self.diagnostics.show(model: self.model)
-                },
-                // Escape reaches the panel's own handler first, so closing has
-                // to be something it can ask for.
-                onClose: { [weak self] in self?.popover.performClose(nil) }
-            )
-        )
-        // Let the popover follow the panel as sections expand and collapse.
-        hosting.sizingOptions = [.preferredContentSize]
-
-        popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = false
-        popover.contentViewController = hosting
-        popover.delegate = self
 
         // objectWillChange fires *before* the value changes, so hop a runloop
         // turn to read the new one.
@@ -158,22 +136,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePopover() {
-        if popover.isShown {
+        if let popover, popover.isShown {
             popover.performClose(nil)
             return
         }
         guard let button = statusItem.button else { return }
         model.refresh()
         model.isPresented = true
+
+        let popover = panelPopover()
+        popover.contentViewController = makePanelController()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Without this the first click inside the popover only brings it forward.
         popover.contentViewController?.view.window?.makeKey()
+    }
+
+    /// The popover itself, made once and kept.
+    ///
+    /// Kept rather than rebuilt per opening on purpose. `NSPopover` owns a
+    /// window, and a window owns backing surfaces the render server allocates;
+    /// throwing the popover away and making another one leaves those surfaces
+    /// behind to be collected in their own time, and opening the panel twenty
+    /// times ran the process up by tens of megabytes of `IOSurface` that way.
+    /// Reusing one popover keeps one window and one set of surfaces for good.
+    private func panelPopover() -> NSPopover {
+        if let popover { return popover }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.delegate = self
+        self.popover = popover
+        return popover
+    }
+
+    /// The panel's contents, built fresh each time it is opened.
+    ///
+    /// This is the expensive half and the half that need not persist: a SwiftUI
+    /// hosting controller holds a view tree, a layer tree and the caches behind
+    /// them, none of which a closed panel needs. Building it takes a few
+    /// milliseconds, against a popover that does not animate.
+    private func makePanelController() -> NSHostingController<MenuContentView> {
+        let hosting = NSHostingController(
+            rootView: MenuContentView(
+                model: model,
+                ui: panelState,
+                onOpenSettings: { [weak self] in
+                    guard let self else { return }
+                    self.popover?.performClose(nil)
+                    self.settings.show(model: self.model)
+                },
+                onOpenDiagnostics: { [weak self] in
+                    guard let self else { return }
+                    self.popover?.performClose(nil)
+                    self.diagnostics.show(model: self.model)
+                },
+                // Escape reaches the panel's own handler first, so closing has
+                // to be something it can ask for.
+                onClose: { [weak self] in self?.popover?.performClose(nil) }
+            )
+        )
+        // Let the popover follow the panel as sections expand and collapse.
+        hosting.sizingOptions = [.preferredContentSize]
+        return hosting
+    }
+
+    /// Give the panel's contents back once it is off screen, keeping the
+    /// popover and its window.
+    ///
+    /// Deliberately a runloop turn late: AppKit is still inside its own close
+    /// when the delegate hears about it, and pulling the content view out from
+    /// under it there is not safe. `malloc_zone_pressure_relief` is the second
+    /// half of the job — releasing the objects only marks the pages free, and
+    /// this is what hands them back to the kernel rather than leaving them on
+    /// the heap's free list, where they still count against the process.
+    private func teardownPanelContent() {
+        guard let popover, !popover.isShown else { return }
+        // An empty controller rather than nil: it collapses the popover's
+        // window to nothing, where nil leaves AppKit holding a surface the
+        // size of the panel that just closed.
+        let empty = NSViewController()
+        empty.view = NSView(frame: .zero)
+        popover.contentViewController = empty
+        malloc_zone_pressure_relief(nil, 0)
     }
 }
 
 extension AppDelegate: NSPopoverDelegate {
     /// Sampling slows back down once nobody is looking.
     nonisolated func popoverDidClose(_ notification: Notification) {
-        Task { @MainActor in model.isPresented = false }
+        Task { @MainActor in
+            model.isPresented = false
+            teardownPanelContent()
+        }
     }
 }

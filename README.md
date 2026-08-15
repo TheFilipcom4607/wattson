@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/macOS-13%2B-1d1d1f?style=flat-square&logo=apple&logoColor=white" alt="macOS 13 or later">
   <img src="https://img.shields.io/badge/Swift-5.9-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 5.9">
   <img src="https://img.shields.io/badge/Apple%20silicon-required-1d1d1f?style=flat-square" alt="Apple silicon required">
+  <img src="https://img.shields.io/badge/idle-~12%20MB-1d1d1f?style=flat-square" alt="About 12 MB idle">
 </p>
 
 <img src="docs/menu-bar.png" width="330" alt="A menu bar showing one Wattson item — a battery drawn about three quarters full, then 78% -4.9 W — where the system's own battery item would otherwise sit.">
@@ -194,6 +195,20 @@ beside the menu bar, in Notification Center, or both.
   actually came up, who made it and what its serial is, anything it has mounted, and when it last<br>
   came and went.</sub>
 </p>
+
+---
+
+## What it costs to run
+
+About **12 MB** sitting in the menu bar, and about **28 MB** once the panel has
+been opened — where it stays, however many times you open it again.
+
+The panel is not kept between openings: its contents are built when you open it
+and given back when you close it, and only the popover and its one window live in
+between. Keeping the whole thing alive is the ordinary thing to do, and it cost
+more than everything else in the app put together — the surfaces behind a window
+are charged to the process whether or not anything is on screen, so every opening
+added to the total and none of it came back.
 
 ---
 
