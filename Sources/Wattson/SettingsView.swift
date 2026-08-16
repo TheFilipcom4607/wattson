@@ -87,6 +87,7 @@ struct SettingsView: View {
                     .disabled(!model.showDevices)
                     .padding(.leading, 16)
                 Toggle("This Mac's limits", isOn: $model.showPortLimits)
+                Toggle("CPU speed", isOn: $model.showThrottle)
             }
         }
     }

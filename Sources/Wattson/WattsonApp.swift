@@ -23,6 +23,29 @@ enum Entry {
             dumpDevices(scan)
             exit(0)
         }
+        // `Wattson --throttle` prints thermal pressure and what the cores are
+        // actually running at, once a second.
+        if arguments.contains("--throttle") {
+            guard let reader = CPUSpeedReader() else {
+                print("Performance states are not readable on this machine.")
+                exit(1)
+            }
+            while true {
+                let pressure = ThermalPressure(ProcessInfo.processInfo.thermalState)
+                let clusters = reader.read()
+                let speeds = (clusters ?? [])
+                    .filter(\.isMeaningful)
+                    .map {
+                        String(format: "%@ %.0f/%.0f MHz (%.0f%% busy)",
+                               $0.name, $0.achievedMHz, $0.ceilingMHz, $0.busyFraction * 100)
+                    }
+                    .joined(separator: "  |  ")
+                print("thermal \(pressure.label.lowercased())"
+                      + (speeds.isEmpty ? "  |  (warming up)" : "  |  " + speeds))
+                fflush(stdout)
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
         if arguments.contains("--watch") {
             while true {
                 let power = PowerMonitor.read()

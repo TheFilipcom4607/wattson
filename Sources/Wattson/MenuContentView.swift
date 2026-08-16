@@ -81,8 +81,71 @@ struct MenuContentView: View {
                 Sparkline(samples: model.history).padding(.top, 2)
             }
 
+            if model.showThrottle, model.canReadSpeed { speedRow }
+
             if model.lowPower.isSupported { lowPowerRow }
         }
+    }
+
+    /// What the cores actually ran at, against what this machine can do.
+    ///
+    /// The frequency is evidence, not a verdict. A Mac sitting well under its
+    /// ceiling because nothing is asking it to go faster is not being throttled,
+    /// and nothing about the number alone can tell that apart from a Mac being
+    /// held down — so the number is stated plainly and only turns orange, with a
+    /// reason under it, when Wattson can name a cause it can actually see.
+    private var speedRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("CPU")
+                    .font(.system(size: 11))
+                // macOS saying it is shedding performance is worth showing even
+                // when the cores happen to be idle at this instant.
+                if model.throttle.pressure.isShedding {
+                    Text(model.throttle.pressure.label.lowercased())
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                }
+                Spacer(minLength: 4)
+                if let cluster = model.throttle.headline {
+                    Text(gigahertz(cluster.achievedMHz) + " of " + gigahertz(cluster.ceilingMHz))
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(model.throttleReason == nil
+                            ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                } else {
+                    // The first sample after opening has nothing to subtract
+                    // from, so there is a beat before there is a figure.
+                    Text("—")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let cluster = model.throttle.headline {
+                SpeedBar(
+                    fraction: cluster.fractionOfCeiling,
+                    held: model.throttleReason != nil
+                )
+            }
+
+            if let reason = model.throttleReason {
+                Text(reason)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// 4464 MHz reads as 4.46 GHz, which is how the number is spoken.
+    private func gigahertz(_ megahertz: Double) -> String {
+        String(format: "%.2f GHz", megahertz / 1000)
     }
 
     /// The one control the system's battery menu has that this panel did not.
@@ -388,6 +451,31 @@ private func allocationColor(_ id: String) -> Color {
 
 /// Where the power goes, as one stacked bar: Mac, accessories, battery, and
 /// whatever the charger still has spare.
+/// How much of its ceiling the cluster is reaching, as a bar.
+///
+/// Drawn to the same proportions as the allocation bar above it so the two read
+/// as the same kind of thing, and filled from the same quaternary tail — what is
+/// empty here is the headroom the machine is not using, whether or not it could.
+private struct SpeedBar: View {
+    let fraction: Double
+    /// Something is holding the cores down, and the bar says so in the same
+    /// colour the figure beside it uses.
+    let held: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(held ? AnyShapeStyle(.orange) : AnyShapeStyle(.tint))
+                    .frame(width: max(0, geometry.size.width * min(max(fraction, 0), 1)))
+                Rectangle().fill(.quaternary)
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 5)
+    }
+}
+
 private struct AllocationBar: View {
     let allocation: PowerAllocation
 

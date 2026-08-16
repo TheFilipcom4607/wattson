@@ -65,7 +65,54 @@ final class DeviceModel: ObservableObject {
             // Reading it costs a subprocess, so it is read when somebody is
             // about to look at it rather than on the timer.
             if isPresented { refreshLowPower() }
+            // Performance states are only worth subscribing to while somebody
+            // is reading them, and the reader is nothing but a subscription and
+            // one previous sample, so it costs nothing to build again.
+            if isPresented {
+                speedReader = CPUSpeedReader()
+            } else {
+                speedReader = nil
+                throttle.clusters = []
+            }
         }
+    }
+
+    // MARK: - Being held back
+
+    /// Thermal pressure, and what the cores actually ran at.
+    @Published private(set) var throttle = ThrottleSnapshot()
+    /// Nil while the panel is closed, and on any machine whose performance
+    /// states cannot be read.
+    private var speedReader: CPUSpeedReader?
+
+    /// Whether this Mac can report performance states at all, so the panel can
+    /// leave the whole section out rather than show an empty one. A fact about
+    /// the machine, not about whether sampling happens to be running.
+    var canReadSpeed: Bool { CPUSpeedReader.isSupported }
+
+    /// Why the cores are below their ceiling, when that can be said honestly.
+    ///
+    /// Only ever names a cause it has evidence for. Cores sitting low because
+    /// nothing is asking them to go faster are not throttled, so this says
+    /// nothing at all unless they are busy and still short of the ceiling — and
+    /// even then it stays quiet unless one of the three things Wattson can
+    /// actually see is true. Guessing "probably heat" is what every other tool
+    /// does and is wrong as often as not.
+    var throttleReason: String? {
+        guard let cluster = throttle.headline,
+              cluster.busyFraction > 0.4,
+              cluster.fractionOfCeiling < 0.9
+        else { return nil }
+
+        if isLowPowerOn { return "Held back by Low Power Mode" }
+        if throttle.pressure.isShedding { return "Held back by heat" }
+        // The charger being unable to keep up shows as the battery going down
+        // while plugged in — the same measured fact the drain notice is built
+        // on, not a comparison against what a bigger brick could have done.
+        if power.externalConnected, let watts = power.batteryWatts, watts < -1 {
+            return "The charger is not keeping up"
+        }
+        return nil
     }
 
     // MARK: - Low Power Mode
@@ -159,6 +206,7 @@ final class DeviceModel: ObservableObject {
     @Published var showSparkline: Bool { didSet { save(showSparkline, "showSparkline") } }
     @Published var showCable: Bool { didSet { save(showCable, "showCable") } }
     @Published var showPortLimits: Bool { didSet { save(showPortLimits, "showPortLimits") } }
+    @Published var showThrottle: Bool { didSet { save(showThrottle, "showThrottle") } }
     @Published var showDevices: Bool { didSet { save(showDevices, "showDevices") } }
     @Published var showVendors: Bool { didSet { save(showVendors, "showVendors") } }
     /// Diagnostic capture is deliberately opt-in: its reports can be large and
@@ -233,6 +281,7 @@ final class DeviceModel: ObservableObject {
         showSparkline = Self.flag("showSparkline")
         showCable = Self.flag("showCable")
         showPortLimits = Self.flag("showPortLimits")
+        showThrottle = Self.flag("showThrottle")
         showDevices = Self.flag("showDevices")
         showVendors = Self.flag("showVendors")
         showDebugOptions = UserDefaults.standard.bool(forKey: "showDebugOptions")
@@ -643,6 +692,16 @@ final class DeviceModel: ObservableObject {
 
         // Port wattage moves every second, so re-attribute on each sample.
         attributeMeasuredPower()
+
+        // Thermal pressure is a property read with no I/O behind it, so it is
+        // taken every tick whether or not anybody is looking. The performance
+        // states are a subscription and only run while the panel is open; the
+        // first reading after opening is nil, because a residency figure is the
+        // difference between two samples and there is only one so far.
+        throttle.pressure = ThermalPressure(ProcessInfo.processInfo.thermalState)
+        if let clusters = speedReader?.read() {
+            throttle.clusters = clusters
+        }
 
         // Track whatever the headline shows: input from the wall, or system draw.
         let watts = power.externalConnected
