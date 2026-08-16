@@ -80,6 +80,25 @@ struct ClusterSpeed: Identifiable, Equatable {
     var isMeaningful: Bool { busyFraction > 0.05 }
 }
 
+/// How much the machine is being held back, in one word.
+enum ThrottleLevel: Int, Comparable {
+    case none
+    case slight
+    case moderate
+    case heavy
+
+    static func < (a: ThrottleLevel, b: ThrottleLevel) -> Bool { a.rawValue < b.rawValue }
+
+    var label: String {
+        switch self {
+        case .none: return "No"
+        case .slight: return "Slightly"
+        case .moderate: return "Yes"
+        case .heavy: return "A lot"
+        }
+    }
+}
+
 /// Everything the panel needs to talk about being held back.
 struct ThrottleSnapshot: Equatable {
     var pressure: ThermalPressure = .nominal
@@ -90,6 +109,40 @@ struct ThrottleSnapshot: Equatable {
     var headline: ClusterSpeed? {
         clusters.first { $0.name.hasPrefix("Performance") && $0.isMeaningful }
             ?? clusters.first { $0.isMeaningful }
+    }
+
+    /// The one-word answer, taken as the worse of the two things that can be
+    /// known — because either one alone is wrong on its own.
+    ///
+    /// macOS's own level misses real throttling outright: cores measured here
+    /// boosting to 4464 MHz and being pulled back to 3779 within six seconds
+    /// had `thermalState` reading nominal the whole way down. And frequency
+    /// alone cannot tell a machine being held under its ceiling from one that
+    /// simply has nothing to do. Each covers the other's blind spot, so the
+    /// answer is whichever is worse.
+    var level: ThrottleLevel { max(thermalLevel, speedLevel) }
+
+    private var thermalLevel: ThrottleLevel {
+        switch pressure {
+        case .nominal: return .none
+        case .fair: return .slight
+        case .serious: return .moderate
+        case .critical: return .heavy
+        }
+    }
+
+    /// What the shortfall from the ceiling says, and only when the cores were
+    /// genuinely being asked to work. Below that the figure means nothing: a
+    /// resting Mac sits far under its ceiling by choice, and calling that
+    /// throttling would make the row cry wolf all day.
+    private var speedLevel: ThrottleLevel {
+        guard let cluster = headline, cluster.busyFraction > 0.4 else { return .none }
+        switch cluster.fractionOfCeiling {
+        case 0.95...: return .none
+        case 0.85..<0.95: return .slight
+        case 0.70..<0.85: return .moderate
+        default: return .heavy
+        }
     }
 }
 

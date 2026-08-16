@@ -100,47 +100,48 @@ struct MenuContentView: View {
                 Image(systemName: "speedometer")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                Text("CPU")
+                Text("Throttling")
                     .font(.system(size: 11))
-                // macOS saying it is shedding performance is worth showing even
-                // when the cores happen to be idle at this instant.
-                if model.throttle.pressure.isShedding {
-                    Text(model.throttle.pressure.label.lowercased())
-                        .font(.system(size: 9))
-                        .foregroundStyle(.orange)
-                }
                 Spacer(minLength: 4)
-                if let cluster = model.throttle.headline {
-                    Text(gigahertz(cluster.achievedMHz) + " of " + gigahertz(cluster.ceilingMHz))
-                        .font(.system(size: 11))
-                        .monospacedDigit()
-                        .foregroundStyle(model.throttleReason == nil
-                            ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
-                } else {
-                    // The first sample after opening has nothing to subtract
-                    // from, so there is a beat before there is a figure.
-                    Text("—")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
+                Text(model.throttle.level.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(levelColor)
             }
 
             if let cluster = model.throttle.headline {
                 SpeedBar(
                     fraction: cluster.fractionOfCeiling,
-                    held: model.throttleReason != nil
+                    held: model.throttle.level >= .moderate
                 )
             }
 
-            if let reason = model.throttleReason {
-                Text(reason)
+            // The evidence under the verdict: what the cores actually reached,
+            // and the cause when there is one that can be named.
+            if let cluster = model.throttle.headline {
+                Text(
+                    gigahertz(cluster.achievedMHz) + " of " + gigahertz(cluster.ceilingMHz)
+                        + (model.throttleReason.map { " · " + $0.lowercasedFirst } ?? "")
+                )
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.top, 2)
+    }
+
+    /// Escalating rather than alarming: a machine dipping slightly under its
+    /// ceiling is the normal state of a busy laptop and must not look like a
+    /// fault, so only the top two levels take a warning colour.
+    private var levelColor: AnyShapeStyle {
+        switch model.throttle.level {
+        case .none: return AnyShapeStyle(.tertiary)
+        case .slight: return AnyShapeStyle(.secondary)
+        case .moderate: return AnyShapeStyle(.orange)
+        case .heavy: return AnyShapeStyle(.red)
+        }
     }
 
     /// 4464 MHz reads as 4.46 GHz, which is how the number is spoken.

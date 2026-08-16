@@ -31,16 +31,18 @@ enum Entry {
                 exit(1)
             }
             while true {
-                let pressure = ThermalPressure(ProcessInfo.processInfo.thermalState)
-                let clusters = reader.read()
-                let speeds = (clusters ?? [])
+                var snapshot = ThrottleSnapshot()
+                snapshot.pressure = ThermalPressure(ProcessInfo.processInfo.thermalState)
+                snapshot.clusters = reader.read() ?? []
+                let speeds = snapshot.clusters
                     .filter(\.isMeaningful)
                     .map {
                         String(format: "%@ %.0f/%.0f MHz (%.0f%% busy)",
                                $0.name, $0.achievedMHz, $0.ceilingMHz, $0.busyFraction * 100)
                     }
                     .joined(separator: "  |  ")
-                print("thermal \(pressure.label.lowercased())"
+                print("throttling: \(snapshot.level.label.lowercased())"
+                      + "  |  thermal \(snapshot.pressure.label.lowercased())"
                       + (speeds.isEmpty ? "  |  (warming up)" : "  |  " + speeds))
                 fflush(stdout)
                 Thread.sleep(forTimeInterval: 1)

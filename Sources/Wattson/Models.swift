@@ -439,6 +439,10 @@ enum SpeedFormat {
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 
+    /// "Held back by heat" -> "held back by heat", for a sentence it is being
+    /// appended to rather than starting.
+    var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
+
     /// Drops the middle rather than the tail: on flash media the digits that
     /// tell two identical sticks apart are usually at the end, which is exactly
     /// what ordinary truncation would eat.
