@@ -28,6 +28,7 @@ enum SelfTest {
         checks += identityChecks()
         checks += batteryChecks()
         checks += portStatsChecks()
+        checks += thunderboltChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -457,6 +458,85 @@ enum SelfTest {
         let noisyStats = PortStatsMonitor.usbPort(from: noisy, id: "test")
         checks.append(Check(name: "usb port: over-current and enumeration failures surface",
                             passed: noisyStats?.faultCounts.count == 2))
+        return checks
+    }
+
+    // MARK: - Thunderbolt link state
+
+    /// This Mac's `IOThunderboltPort` adapters, as read with nothing attached.
+    /// Two sockets, two link halves each, plus the adapters that are not
+    /// physical ports at all.
+    private static let thunderboltCapture: [[String: Any]] = [
+        ["Description": "Thunderbolt Native Host Interface Adapter", "Port Number": 7],
+        ["Description": "Thunderbolt Port", "Socket ID": "1", "Port Number": 1,
+         "Current Link Speed": 8, "Current Link Width": 1,
+         "Supported Link Speed": 12, "Supported Link Width": 2, "Thunderbolt Version": 32],
+        ["Description": "Thunderbolt Port", "Socket ID": "1", "Port Number": 2,
+         "Current Link Speed": 8, "Current Link Width": 1,
+         "Supported Link Speed": 12, "Supported Link Width": 2, "Thunderbolt Version": 32],
+        ["Description": "Thunderbolt Port", "Socket ID": "2", "Port Number": 1,
+         "Current Link Speed": 8, "Current Link Width": 1,
+         "Supported Link Speed": 12, "Supported Link Width": 2, "Thunderbolt Version": 32],
+        ["Description": "Thunderbolt Port", "Socket ID": "2", "Port Number": 2,
+         "Current Link Speed": 8, "Current Link Width": 1,
+         "Supported Link Speed": 12, "Supported Link Width": 2, "Thunderbolt Version": 32],
+    ]
+
+    private static func thunderboltChecks() -> [Check] {
+        var checks: [Check] = []
+        let links = ThunderboltMonitor.links(from: thunderboltCapture)
+        checks.append(Check(name: "thunderbolt: one entry per socket, host adapter ignored",
+                            passed: links.count == 2 && links[1] != nil && links[2] != nil,
+                            detail: "got \(links.count) sockets"))
+        checks.append(Check(name: "thunderbolt: controller class read from the supported mask",
+                            passed: links[1]?.capabilityLabel == "Thunderbolt 4 / USB4 — 40 Gbps",
+                            detail: "got \(links[1]?.capabilityLabel ?? "nil")"))
+
+        // The trap this reader exists to avoid: an idle port on this Mac
+        // reports a live-looking current speed and width with nothing plugged
+        // in, so the achieved link must be gated on the port's own evidence
+        // that Thunderbolt is really running.
+        var idle = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: false)
+        idle.thunderbolt = links[1]
+        idle.transportsActive = []
+        checks.append(Check(name: "thunderbolt: an empty port claims no achieved link",
+                            passed: idle.thunderboltAchieved == nil,
+                            detail: "got \(idle.thunderboltAchieved ?? "nil")"))
+
+        var power = idle
+        power.isConnected = true
+        power.transportsActive = ["CC"]
+        checks.append(Check(name: "thunderbolt: a charger on the port is not a Thunderbolt link",
+                            passed: power.thunderboltAchieved == nil))
+
+        var running = idle
+        running.isConnected = true
+        running.transportsActive = ["CC", "CIO"]
+        var fast = links[1]
+        fast?.currentSpeedCode = 0x4
+        fast?.currentWidth = 2
+        running.thunderbolt = fast
+        checks.append(Check(name: "thunderbolt: a real link reports its lanes and rate",
+                            passed: running.thunderboltAchieved == "40 Gbps (2 lanes)",
+                            detail: "got \(running.thunderboltAchieved ?? "nil")"))
+
+        // A TB5 controller, which this Mac is not, so the mask has to be read
+        // rather than assumed from the machine it was written on.
+        let tb5 = ThunderboltMonitor.links(from: [[
+            "Description": "Thunderbolt Port", "Socket ID": "1",
+            "Supported Link Speed": 14, "Supported Link Width": 2,
+        ]])
+        checks.append(Check(name: "thunderbolt: a TB5-capable controller is recognised",
+                            passed: tb5[1]?.capabilityLabel == "Thunderbolt 5 / USB4 v2 — 80 Gbps",
+                            detail: "got \(tb5[1]?.capabilityLabel ?? "nil")"))
+
+        // An unknown speed code must vanish, not be guessed at.
+        let odd = ThunderboltMonitor.links(from: [[
+            "Description": "Thunderbolt Port", "Socket ID": "1",
+            "Supported Link Speed": 1, "Supported Link Width": 2,
+        ]])
+        checks.append(Check(name: "thunderbolt: an unknown speed code reports nothing",
+                            passed: odd[1]?.capabilityLabel == nil))
         return checks
     }
 }

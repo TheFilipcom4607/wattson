@@ -139,6 +139,15 @@ enum JSONOutput {
                 ["volts": $0.volts, "amps": $0.amps, "watts": $0.watts] as [String: Any]
             }
         }
+        if let link = port.thunderbolt {
+            object["thunderbolt"] = compact([
+                "controller": link.capabilityLabel,
+                "supportedLanes": link.supportedWidth,
+                // Present only when the port says Thunderbolt is really up.
+                "achieved": port.thunderboltAchieved,
+                "achievedLanes": port.thunderboltAchieved == nil ? nil : link.currentWidth,
+            ])
+        }
         if let cable = port.emarker { object["cable"] = identityObject(cable) }
         if let partner = port.partner { object["partner"] = identityObject(partner) }
         return object

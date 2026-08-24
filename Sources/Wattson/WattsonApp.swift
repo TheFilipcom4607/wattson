@@ -150,6 +150,12 @@ enum Entry {
             if let supported = TransportName.best(port.transportsSupported) {
                 print("   Port max:   \(supported)")
             }
+            if let capability = port.thunderbolt?.capabilityLabel {
+                print("   TB link:     \(capability) controller")
+            }
+            if let achieved = port.thunderboltAchieved {
+                print("   TB running:  \(achieved)")
+            }
             if let negotiated = port.negotiated {
                 print(String(format: "   Contract:    %.0f V / %.2f A (%.0f W)",
                              negotiated.volts, negotiated.amps, negotiated.watts))

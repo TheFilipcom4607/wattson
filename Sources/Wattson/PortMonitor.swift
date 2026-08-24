@@ -202,6 +202,21 @@ struct PortInfo: Identifiable, Hashable {
     /// "Policy Authorized" once the user has allowed the accessory; "Not
     /// Required" for anything the policy does not cover.
     var authorization: String?
+    /// The Thunderbolt controller fronting this port, when there is one.
+    var thunderbolt: ThunderboltLink?
+
+    /// What the Thunderbolt link actually came up at.
+    ///
+    /// Gated on the port reporting an active CIO transport, which is the
+    /// app's existing evidence that Thunderbolt is genuinely running. The
+    /// controller's own "current" figures are not that evidence: an empty port
+    /// on this Mac reports a current speed code of 8 across one lane with
+    /// nothing attached, so trusting them alone would put a 10 Gbps link on
+    /// every unoccupied port.
+    var thunderboltAchieved: String? {
+        guard transportsActive.contains("CIO") else { return nil }
+        return thunderbolt?.achievedLabel
+    }
 
     /// >3 A is only legal over a cable whose e-marker declares 5 A.
     var isFiveAmpRated: Bool {
@@ -329,6 +344,8 @@ enum PortMonitor {
         defer { IOObjectRelease(iterator) }
 
         let vbus = SMCMonitor.portPower()
+        // One read for the whole machine rather than one per port.
+        let thunderbolt = ThunderboltMonitor.read()
         var ports: [PortInfo] = []
         while case let service = IOIteratorNext(iterator), service != 0 {
             defer { IOObjectRelease(service) }
@@ -351,6 +368,11 @@ enum PortMonitor {
                 port.outputAmps = power.amps
                 port.outputWatts = power.watts
             }
+            // Socket ID and HPM port number are both logical numbering of the
+            // same controllers, and they agree on this Mac. Neither says
+            // anything about where the port is on the case — the same caveat
+            // that applies to every port number here.
+            if kind == .usbC, let number { port.thunderbolt = thunderbolt[number] }
             port.transportsActive = properties["TransportsActive"] as? [String] ?? []
             port.transportsSupported = properties["TransportsSupported"] as? [String] ?? []
             port.isActiveCable = properties["ActiveCable"] as? Bool ?? false

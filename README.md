@@ -143,6 +143,13 @@ Control Center › Battery.
   the cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
+- **What the Thunderbolt controller behind each port is**, and what the link
+  actually came up at when one is running. The port's transport list says what a
+  port is *capable* of and reads the same whether it is empty or carrying a dock;
+  this is the controller's own account — its generation, how many lanes it has,
+  and what it settled on. An achieved link is only ever reported when the port
+  says Thunderbolt is genuinely running, because an idle port reports a
+  convincing-looking link with nothing attached at all.
 - **What the cable's own chip says it can carry** — its speed, its current and
   voltage ratings, and who made it. This is read from the cable's e-marker over
   SOP', which is what separates a 3 A cable from one rated for 5 A. A cable
