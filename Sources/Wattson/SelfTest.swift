@@ -37,6 +37,7 @@ enum SelfTest {
         checks += billboardChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
+        checks += headlineChecks()
         checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
@@ -325,7 +326,7 @@ enum SelfTest {
         usb2Port.emarker = cable(speedRung: 0b000)
         let blamed = LinkBottleneck.verdict(for: fallen, port: usb2Port, behind: nil)
         checks.append(Check(name: "link: a USB 2.0 cable is named as the cause",
-                            passed: blamed?.cause == .cableIsUSB2(vendor: "Apple"),
+                            passed: blamed?.cause == .cableIsUSB2(chip: "Apple"),
                             detail: "got \(blamed.map { String(describing: $0.cause) } ?? "nil")"))
         checks.append(Check(name: "link: the verdict states both figures",
                             passed: blamed?.summary.contains("USB 3.2") == true
@@ -361,7 +362,7 @@ enum SelfTest {
         var tree = [hub]
         LinkBottleneck.annotate(&tree, port: usb2Port)
         checks.append(Check(name: "link: the hub is the one blamed for the cable",
-                            passed: tree[0].linkVerdict?.cause == .cableIsUSB2(vendor: "Apple")
+                            passed: tree[0].linkVerdict?.cause == .cableIsUSB2(chip: "Apple")
                                 && tree[0].linkVerdict?.isRootCause == true))
         checks.append(Check(
             name: "link: everything behind the hub points at the hub",
@@ -463,6 +464,37 @@ enum SelfTest {
         checks.append(Check(name: "cable: a chip that published nothing gets no notes",
                             passed: PortInfo.cableNotes(
                                 emarker: withheld, negotiatedWatts: 140, achievedGbps: 40).isEmpty))
+        return checks
+    }
+
+    // MARK: - What is on the end of the cable
+
+    private static func headlineChecks() -> [Check] {
+        var checks: [Check] = []
+        // A pair of headphones charging off the Mac negotiates no contract and
+        // presents no data. Read from the contract alone it is a bare cable.
+        var sinking = PortInfo(name: "USB-C", kind: .usbC, number: 2, isConnected: true)
+        sinking.transportsActive = ["CC"]
+        sinking.outputVolts = 5.14
+        sinking.outputAmps = 1.015
+        sinking.outputWatts = 5.21
+        checks.append(Check(name: "headline: a device drawing power is not a bare cable",
+                            passed: sinking.attachedHeadline == "Drawing power — no data link",
+                            detail: "got \(sinking.attachedHeadline)"))
+
+        var bare = sinking
+        bare.outputVolts = nil
+        bare.outputAmps = nil
+        bare.outputWatts = nil
+        checks.append(Check(name: "headline: a cable with nothing on it still says so",
+                            passed: bare.attachedHeadline == "Cable only — nothing negotiated",
+                            detail: "got \(bare.attachedHeadline)"))
+
+        var data = sinking
+        data.transportsActive = ["CC", "USB3"]
+        checks.append(Check(name: "headline: a data device drawing power says both",
+                            passed: data.attachedHeadline == "Data device, drawing power",
+                            detail: "got \(data.attachedHeadline)"))
         return checks
     }
 
@@ -745,6 +777,14 @@ enum SelfTest {
                             detail: "got \(unlisted.vendorName ?? "nil")"))
         checks.append(Check(name: "identity: no vendor ID means no vendor",
                             passed: lone.vendorName == nil))
+        // 0x2E99 read "Anker" for as long as the table has existed and belongs
+        // to Hynetek Semiconductor, who make the PD controller inside a great
+        // many cables — including the Baseus C-to-C that this Mac reported as
+        // Anker. Checked against the USB-IF list, which is what the ID in a PD
+        // e-marker is registered with.
+        checks.append(Check(name: "identity: 0x2E99 is the chip maker, not a cable brand",
+                            passed: Scanner.vendorName(forID: 0x2E99) == "Hynetek Semiconductor",
+                            detail: "got \(Scanner.vendorName(forID: 0x2E99) ?? "nil")"))
 
         // A populated node met first, then an empty one for the same address:
         // the walk visits children in whatever order IOKit hands them over,

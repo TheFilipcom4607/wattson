@@ -161,6 +161,16 @@ enum Scanner {
     /// as a whole, so this is the working subset: the vendors that actually turn
     /// up in docks, enclosures, hubs and peripherals, where the device's own
     /// vendor string is so often blank.
+    ///
+    /// The names here are the ones somebody would recognise, which is not
+    /// always the registrant. A flash drive published under Phison's ID reads
+    /// better as "Kingston" — the name on the casing — and several entries are
+    /// deliberately that way round.
+    ///
+    /// That licence stops at making one up. 0x2E99 read "Anker" and belongs to
+    /// Hynetek Semiconductor, who make PD controller chips; there is no Anker
+    /// product behind it to justify the substitution the way there is for
+    /// Kingston. It put "Cable made by: Anker" under a Baseus cable.
     private static let knownVendors: [Int: String] = [
         0x03EB: "Atmel", 0x03F0: "HP", 0x0403: "FTDI", 0x0409: "NEC",
         0x0424: "Microchip", 0x043E: "LG", 0x0451: "Texas Instruments",
@@ -199,7 +209,7 @@ enum Scanner {
         0x06AD: "Greatland Electronics", 0x2F16: "Shenzhen Kejinming",
         0x2188: "Sonix", 0x2207: "Rockchip", 0x2357: "TP-Link",
         0x2717: "Xiaomi", 0x28DE: "Valve", 0x2E8A: "Raspberry Pi",
-        0x2E99: "Anker", 0x2ECC: "Cypress", 0x413C: "Dell", 0x8087: "Intel"
+        0x2E99: "Hynetek Semiconductor", 0x2ECC: "Cypress", 0x413C: "Dell", 0x8087: "Intel"
     ]
 
     /// What the device actually is, inferred from the drivers macOS attached to it.

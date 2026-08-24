@@ -112,11 +112,17 @@ struct CableEMarker: Hashable {
         return amps * min(volts, 48)
     }
 
-    /// Who made it, when the ID is one the app carries a name for.
+    /// Whose chip this is, when the ID is one the app carries a name for.
+    ///
+    /// Not the brand on the jacket, and the difference is not a nuance. A PD
+    /// e-marker publishes the USB-IF vendor ID of the controller in the plug,
+    /// and cable brands mostly do not hold one: the Baseus C-to-C on this desk
+    /// answers with 0x2E99, which is Hynetek Semiconductor, a chip maker. There
+    /// is no field anywhere in Discover Identity for the name on the cable.
     ///
     /// Falls back to the hex rather than to nothing: an unrecognised vendor ID
-    /// is still the manufacturer's registered ID, and it is what someone would
-    /// paste into a search. Nil only when the endpoint published no ID at all.
+    /// is still a registered ID, and it is what someone would paste into a
+    /// search. Nil only when the endpoint published no ID at all.
     var vendorName: String? {
         guard let vendorID else { return nil }
         return Scanner.vendorName(forID: vendorID) ?? String(format: "0x%04X", vendorID)
@@ -407,13 +413,21 @@ struct PortInfo: Identifiable, Hashable {
     var isSourcing: Bool { (outputWatts ?? 0) > 0.05 }
 
     /// What is on the far end, which is not always just a cable.
+    ///
+    /// Measured draw is consulted before the fall-through, because a headphone
+    /// case charging off this Mac negotiates no contract and presents no data:
+    /// it just takes default Type-C current and says nothing. Read from the
+    /// contract alone that is indistinguishable from a bare cable, and the
+    /// panel said "Cable only — nothing negotiated" over a port measurably
+    /// pushing 5.1 W into a pair of headphones.
     var attachedHeadline: String {
         if kind == .magSafe { return "MagSafe 3 power cable" }
         switch (carriesData, negotiated != nil) {
         case (true, true): return "Device + power source"
-        case (true, false): return "Data device"
+        case (true, false): return isSourcing ? "Data device, drawing power" : "Data device"
         case (false, true): return "Power source"
-        case (false, false): return "Cable only — nothing negotiated"
+        case (false, false):
+            return isSourcing ? "Drawing power — no data link" : "Cable only — nothing negotiated"
         }
     }
 

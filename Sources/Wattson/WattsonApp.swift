@@ -168,7 +168,9 @@ enum Entry {
                 print("   Cable:       \(port.cableWiringSummary)")
                 print("   Current:     \(port.currentRating)")
                 if let maker = port.emarker?.vendorName {
-                    print("   Cable made by: \(maker)")
+                    // The chip in the plug, not the name on the jacket. Cable
+                    // brands mostly hold no USB-IF vendor ID at all.
+                    print("   Cable chip:  \(maker)")
                 }
                 for note in port.cableNotes {
                     print("   Cable note:  \(note)")

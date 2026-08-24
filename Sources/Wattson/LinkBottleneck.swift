@@ -30,7 +30,9 @@ struct LinkVerdict: Hashable {
         case displayTookTheLanes
         /// The cable's own chip declares USB 2.0 and nothing more. Also
         /// certain — the cable is saying it has no SuperSpeed pairs in it.
-        case cableIsUSB2(vendor: String?)
+        /// The associated name is the chip's vendor, which is usually not the
+        /// brand printed on the cable.
+        case cableIsUSB2(chip: String?)
         /// Everything below a hub that lost SuperSpeed is behind that hub's
         /// problem, not its own. Named so the same cable is not blamed once
         /// per device hanging off it.
@@ -56,9 +58,12 @@ struct LinkVerdict: Hashable {
         switch cause {
         case .displayTookTheLanes:
             return "Declares \(declared), running at \(got) — the display has both high-speed lanes"
-        case .cableIsUSB2(let vendor):
-            let whose = vendor.map { "\($0) cable" } ?? "cable"
-            return "Declares \(declared), running at \(got) — the \(whose)'s own chip says USB 2.0"
+        case .cableIsUSB2(let chip):
+            // The chip's vendor, not the cable's brand: a PD e-marker has
+            // nowhere to publish the name on the jacket. See
+            // `CableEMarker.vendorName`.
+            let whose = chip.map { " (\($0))" } ?? ""
+            return "Declares \(declared), running at \(got) — the cable's own chip\(whose) says USB 2.0"
         case .behindHub(let name):
             return "Declares \(declared), running at \(got) — everything behind \(name) is"
         case .portHasNoUSB3:
@@ -134,7 +139,7 @@ enum LinkBottleneck {
         // on a link that came up at 480 Mbps is a disagreement, not a cause,
         // and naming it would blame a cable that says it is innocent.
         if let cable, cable.usbSpeed?.hasPrefix("USB 2.0") == true {
-            return .cableIsUSB2(vendor: cable.vendorName)
+            return .cableIsUSB2(chip: cable.vendorName)
         }
         if let port, port.kind == .usbC, !port.transportsSupported.isEmpty,
            !port.transportsSupported.contains("USB3"), !port.transportsSupported.contains("CIO") {
