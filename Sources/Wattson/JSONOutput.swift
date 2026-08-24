@@ -264,6 +264,9 @@ enum JSONOutput {
             // Present only when a mode actually failed. A device whose modes
             // all came up emits no key rather than an empty one.
             "altModeFailure": node.altModeFailure,
+            // Present only when a device declared SuperSpeed and did not get
+            // it. A device running at its own maximum emits no key.
+            "linkBottleneck": node.linkVerdict?.summary,
             "isApple": node.isApple,
             // A device with no serial is keyed on where it is plugged in, and
             // anything scripting against this needs to know which it got.

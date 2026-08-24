@@ -22,6 +22,7 @@ enum Entry {
             let ports = PortMonitor.read()
             var scan = Scanner.scan()
             PowerAttribution.apply(to: &scan.devices, ports: ports, map: PowerAttribution.storedMap)
+            PowerAttribution.diagnoseLinks(&scan.devices, ports: ports, map: PowerAttribution.storedMap)
             print(JSONOutput.render(power: PowerMonitor.read(), ports: ports, scan: scan))
             exit(0)
         }
@@ -29,6 +30,7 @@ enum Entry {
             let ports = PortMonitor.read()
             var scan = Scanner.scan()
             PowerAttribution.apply(to: &scan.devices, ports: ports, map: PowerAttribution.storedMap)
+            PowerAttribution.diagnoseLinks(&scan.devices, ports: ports, map: PowerAttribution.storedMap)
 
             dumpPower(PowerMonitor.read())
             print("")

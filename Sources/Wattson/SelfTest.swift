@@ -35,6 +35,7 @@ enum SelfTest {
         checks += smcChecks()
         checks += connectionStateChecks()
         checks += billboardChecks()
+        checks += linkBottleneckChecks()
         checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
@@ -278,6 +279,104 @@ enum SelfTest {
         // A zero-length capability descriptor would walk the BOS list forever.
         checks.append(Check(name: "billboard: a zero-length capability does not hang the walk",
                             passed: Billboard.parse(bos: [5, 0x0F, 9, 0, 1, 0, 0x10, 0x0D, 0]) == nil))
+        return checks
+    }
+
+    // MARK: - What took the SuperSpeed link
+
+    /// A passive cable whose Cable VDO declares the given speed rung. The
+    /// VDO is at index 3 and the rung is its low three bits, both of which
+    /// the e-marker checks above already establish against real captures.
+    private static func cable(speedRung: UInt32, vendorID: Int = 0x05AC) -> CableEMarker {
+        var emarker = CableEMarker()
+        emarker.productType = 3
+        emarker.vendorID = vendorID
+        emarker.vdos = [0, 0, 0, speedRung]
+        return emarker
+    }
+
+    private static func device(bcd: Int?, mbps: Double?, name: String = "Ethernet") -> DeviceNode {
+        var node = DeviceNode(name: name, kind: .usb)
+        node.usbSpecBCD = bcd
+        node.speedMbps = mbps
+        return node
+    }
+
+    private static func linkBottleneckChecks() -> [Check] {
+        var checks: [Check] = []
+        let fallen = device(bcd: 0x0320, mbps: 480)
+
+        // Nothing to explain: a device running at the tier it declares.
+        checks.append(Check(name: "link: a device at its own speed is not a fault",
+                            passed: LinkBottleneck.verdict(
+                                for: device(bcd: 0x0320, mbps: 5000), port: nil, behind: nil) == nil))
+        checks.append(Check(name: "link: a USB 2.0 device at 480 Mbps is not a fault",
+                            passed: LinkBottleneck.verdict(
+                                for: device(bcd: 0x0200, mbps: 480), port: nil, behind: nil) == nil))
+        checks.append(Check(name: "link: a device whose rate was never reported says nothing",
+                            passed: LinkBottleneck.verdict(
+                                for: device(bcd: 0x0320, mbps: nil), port: nil, behind: nil) == nil))
+
+        // The cable's own chip declaring USB 2.0 is the cable admitting it has
+        // no SuperSpeed pairs in it.
+        var usb2Port = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
+        usb2Port.transportsSupported = ["CC", "USB2", "USB3", "CIO"]
+        usb2Port.emarker = cable(speedRung: 0b000)
+        let blamed = LinkBottleneck.verdict(for: fallen, port: usb2Port, behind: nil)
+        checks.append(Check(name: "link: a USB 2.0 cable is named as the cause",
+                            passed: blamed?.cause == .cableIsUSB2(vendor: "Apple"),
+                            detail: "got \(blamed.map { String(describing: $0.cause) } ?? "nil")"))
+        checks.append(Check(name: "link: the verdict states both figures",
+                            passed: blamed?.summary.contains("USB 3.2") == true
+                                && blamed?.summary.contains("480 Mbps") == true,
+                            detail: blamed?.summary ?? "nil"))
+
+        // A cable claiming more than the link delivered is a disagreement, not
+        // a confession. Blaming it would accuse a cable that says it is fine.
+        var fastCablePort = usb2Port
+        fastCablePort.emarker = cable(speedRung: 0b010)
+        checks.append(Check(name: "link: a cable claiming 10 Gbps is not blamed for a 480 Mbps link",
+                            passed: LinkBottleneck.verdict(
+                                for: fallen, port: fastCablePort, behind: nil)?.cause == .unattributed))
+
+        // Lanes outrank the cable: a display holding both of them is a stated
+        // assignment, and it explains the same symptom.
+        var displayPort = fastCablePort
+        displayPort.phy = PhyLink(index: 0, lanes: [
+            PhyLane(name: "Lane 0", transport: "DisplayPort", powerLevel: "on", client: nil),
+            PhyLane(name: "Lane 1", transport: "DisplayPort", powerLevel: "on", client: nil),
+        ])
+        checks.append(Check(name: "link: a display holding both lanes outranks the cable",
+                            passed: LinkBottleneck.verdict(
+                                for: fallen, port: displayPort, behind: nil)?.cause == .displayTookTheLanes,
+                            detail: "takesAllLanes = \(displayPort.displayIsUsingAllLanes)"))
+
+        // One cable, one accusation. A hub that lost SuperSpeed explains
+        // everything under it, and the devices point at the hub rather than
+        // each repeating the charge against the cable.
+        var hub = device(bcd: 0x0320, mbps: 480, name: "USB2.0 Hub")
+        hub.children = [device(bcd: 0x0320, mbps: 480, name: "Ethernet"),
+                        device(bcd: 0x0320, mbps: 480, name: "Card reader")]
+        var tree = [hub]
+        LinkBottleneck.annotate(&tree, port: usb2Port)
+        checks.append(Check(name: "link: the hub is the one blamed for the cable",
+                            passed: tree[0].linkVerdict?.cause == .cableIsUSB2(vendor: "Apple")
+                                && tree[0].linkVerdict?.isRootCause == true))
+        checks.append(Check(
+            name: "link: everything behind the hub points at the hub",
+            passed: tree[0].children.allSatisfy {
+                $0.linkVerdict?.cause == .behindHub(name: "USB2.0 Hub")
+                    && $0.linkVerdict?.isRootCause == false
+            },
+            detail: "got \(tree[0].children.map { String(describing: $0.linkVerdict?.cause) }.joined(separator: ", "))"))
+
+        // A port with no USB 3 at all. Not a Mac, but the reader does not know
+        // that and the branch should not quietly become unreachable.
+        var slowPort = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
+        slowPort.transportsSupported = ["CC", "USB2"]
+        checks.append(Check(name: "link: a port with no USB 3 answers for itself",
+                            passed: LinkBottleneck.verdict(
+                                for: fallen, port: slowPort, behind: nil)?.cause == .portHasNoUSB3))
         return checks
     }
 

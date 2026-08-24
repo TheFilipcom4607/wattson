@@ -866,6 +866,7 @@ final class DeviceModel: ObservableObject {
         learnControllerMapping()
         var devices = result.devices
         PowerAttribution.apply(to: &devices, ports: ports, map: controllerMap)
+        PowerAttribution.diagnoseLinks(&devices, ports: ports, map: controllerMap)
         result.devices = devices
     }
 

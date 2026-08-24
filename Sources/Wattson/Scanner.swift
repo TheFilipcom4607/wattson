@@ -61,6 +61,7 @@ enum Scanner {
                 node.speeds = [SpeedFormat.usbLabel(mbps: mbps)]
             }
             if let bcd = (properties["bcdUSB"] as? NSNumber)?.intValue {
+                node.usbSpecBCD = bcd
                 node.version = SpeedFormat.usbVersion(bcd: bcd)
             }
             // Current the port has granted this device; USB rails are 5 V.

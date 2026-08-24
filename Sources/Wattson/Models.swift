@@ -58,6 +58,13 @@ struct DeviceNode: Identifiable, Hashable {
     var controller: Int?
     /// Fastest link in Mbit/s, for sorting and the menu bar title.
     var speedMbps: Double?
+    /// `bcdUSB` as the device reports it — 0x0320 is USB 3.2. Kept as the
+    /// number as well as the `version` string because the comparison against
+    /// what the link actually negotiated is arithmetic, not text.
+    var usbSpecBCD: Int?
+    /// Why this device did not get the link it declares it can do. Nil is the
+    /// normal answer, including for every device running at its own maximum.
+    var linkVerdict: LinkVerdict?
     var children: [DeviceNode] = []
 
     var flattenedCount: Int {
@@ -243,6 +250,10 @@ struct DeviceNode: Identifiable, Hashable {
             let stated = altModeVersion.map { "\(altMode) (Billboard \($0))" } ?? altMode
             link.append(("Alt mode", stated))
         }
+        if let altModeFailure { link.append(("Alt mode", altModeFailure)) }
+        // The row that answers the question somebody opened this for. Present
+        // only when the device declared a link it did not get.
+        if let linkVerdict { link.append(("Slower than declared", linkVerdict.summary)) }
         if !link.isEmpty { sections.append(DeviceSection(title: "Link", rows: link)) }
 
         var identity: [(label: String, value: String)] = []
@@ -280,6 +291,9 @@ struct DeviceNode: Identifiable, Hashable {
         // dock whose display output does nothing.
         if let altModeFailure {
             lines.append("Alt mode: " + altModeFailure)
+        }
+        if let linkVerdict {
+            lines.append("Link: " + linkVerdict.summary)
         }
         return lines
     }
@@ -486,6 +500,24 @@ enum PowerAttribution {
                   let watts = port.outputWatts, watts > 0.05
             else { continue }
             devices[index].measuredWatts = watts
+        }
+    }
+
+    /// Names what took a device's SuperSpeed link, where the port it arrived
+    /// through can be identified.
+    ///
+    /// Runs off the same controller map as the power attribution, and for the
+    /// same reason: the verdict leans on the port's cable and lane state, so a
+    /// device whose port cannot be identified gets the port-free verdict rather
+    /// than another port's cable blamed for it.
+    static func diagnoseLinks(_ devices: inout [DeviceNode], ports: [PortInfo], map: [Int: Int]) {
+        for index in devices.indices {
+            let port = devices[index].controller
+                .flatMap { map[$0] }
+                .flatMap { number in ports.first { $0.kind == .usbC && $0.number == number } }
+            var subtree = [devices[index]]
+            LinkBottleneck.annotate(&subtree, port: port)
+            devices[index] = subtree[0]
         }
     }
 }
