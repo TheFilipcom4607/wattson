@@ -73,34 +73,61 @@ struct BillboardCapability: Hashable {
     }
 }
 
-/// Reads the Billboard Capability out of a device's BOS descriptor.
+/// A device's own account of how fast it can go, from the BOS descriptor.
 ///
-/// IOKit does not publish the parsed capability, so the descriptor is fetched
-/// with a standard `GET_DESCRIPTOR(BOS)` control transfer over the legacy
+/// This exists because `bcdUSB` cannot answer the question. It looked like it
+/// could: a device declaring USB 3.x that enumerated at 480 Mbps has plainly
+/// lost its SuperSpeed pairs. But `bcdUSB` describes the enumeration that
+/// happened, not the device's capability, and a SuperSpeed device that came up
+/// on a USB 2.0 cable trains only on D+/D- and reports itself as USB 2.1. The
+/// test could never fire for the exact case it was written for.
+///
+/// An iPhone 16 Pro on a USB 2.0 cable is that case, and it is what caught it:
+/// `bcdUSB` 0x0210, link speed 480 Mbps, and a BOS descriptor saying
+/// `wSpeedsSupported` = 0x000E with a SuperSpeedPlus capability declaring
+/// 10 Gbps. The 0x0210 is itself the tell — USB 2.1 means "this device has a
+/// BOS descriptor", which is where the real answer was the whole time.
+struct SpeedCapability: Hashable {
+    /// Bit 3 of `wSpeedsSupported`. The device says it has SuperSpeed pairs,
+    /// whatever it happens to have enumerated at.
+    var supportsSuperSpeed = false
+    /// The fastest sublink the SuperSpeedPlus capability declares, in Gbps.
+    /// Nil on a device that carries no such capability — plain 5 Gbps
+    /// SuperSpeed devices do not — which is why `supportsSuperSpeed` is the
+    /// thing gating the verdict and this only sharpens the wording.
+    var declaredGbps: Double?
+}
+
+/// Fetches and caches a USB device's BOS descriptor, and parses the two
+/// capabilities Wattson has a use for.
+///
+/// IOKit does not publish the BOS, so it is fetched with a standard
+/// `GET_DESCRIPTOR(BOS)` control transfer over the legacy
 /// `IOUSBDeviceInterface`. This works from an unsandboxed app with no USB
-/// entitlement, and — this is the important part — **without opening the
-/// device**. A no-open `DeviceRequest` either returns the descriptor or returns
-/// an error; it does not disturb a device a kernel driver is holding.
+/// entitlement, and — the part that matters — **without opening the device**. A
+/// no-open `DeviceRequest` either returns the descriptor or returns an error;
+/// it does not disturb a device a kernel driver is holding.
 ///
 /// There is deliberately no fallback to `USBDeviceOpen` on a failed read.
-/// whatcable shipped that fallback and it seized a wireless mouse receiver from
-/// its kernel HID driver and froze the user's input (their issue #370). A read
-/// that fails is final here.
+/// whatcable shipped that fallback and force-opening a device its kernel HID
+/// driver owned seized a wireless mouse receiver and froze the user's input
+/// (their issue #370). A read that fails here is final.
 ///
-/// **Not yet verified against hardware.** The layout below is taken from the
-/// USB Billboard Device Class specification rather than from a capture, because
-/// no device that publishes one has been attached to this machine. It is built
-/// to fail into silence accordingly: the descriptor's own length has to account
-/// for exactly the number of alternate modes it claims, and any disagreement
-/// returns nothing rather than a guess. A misread offset fails that equation
-/// almost every time.
-enum Billboard {
+/// Verified on hardware: an iPhone 16 Pro answers with 70 bytes across four
+/// capabilities and a Ugreen NVMe enclosure with 42 bytes across three, read
+/// while both were mounted and in use, with no interruption to either.
+enum BOSDescriptor {
 
     // MARK: - Parsing
 
-    /// Finds the Billboard capability inside a BOS descriptor and decodes it.
-    /// Pure, so a recorded descriptor replays through exactly this.
-    static func parse(bos: [UInt8]) -> BillboardCapability? {
+    /// Walks the capability list and hands each one to `body` until it returns
+    /// a value. Shared by both parses so the walk's bounds checks exist once.
+    ///
+    /// A zero-length capability would loop here forever and a capability
+    /// running past the end is a malformed descriptor; both abandon the walk.
+    private static func firstCapability<T>(
+        in bos: [UInt8], _ body: (_ type: UInt8, _ bytes: ArraySlice<UInt8>) -> T?
+    ) -> T? {
         // BOS header: bLength, bDescriptorType (0x0F), wTotalLength, bNumDeviceCaps.
         guard bos.count >= 5, bos[1] == 0x0F else { return nil }
         let total = Int(bos[2]) | Int(bos[3]) << 8
@@ -109,16 +136,87 @@ enum Billboard {
         var offset = Int(bos[0])
         while offset + 3 <= total {
             let length = Int(bos[offset])
-            // A zero-length descriptor would loop here forever, and a
-            // descriptor running past the end is a malformed one.
             guard length >= 3, offset + length <= total else { return nil }
-            // 0x10 DEVICE CAPABILITY, 0x0D BILLBOARD.
-            if bos[offset + 1] == 0x10, bos[offset + 2] == 0x0D {
-                return capability(from: Array(bos[offset..<(offset + length)]))
+            // 0x10 is DEVICE CAPABILITY; anything else is not a capability.
+            if bos[offset + 1] == 0x10,
+               let found = body(bos[offset + 2], bos[offset..<(offset + length)]) {
+                return found
             }
             offset += length
         }
         return nil
+    }
+
+    /// The Billboard capability (`0x0D`), or nothing.
+    static func billboard(in bos: [UInt8]) -> BillboardCapability? {
+        firstCapability(in: bos) { type, bytes in
+            type == 0x0D ? billboardCapability(from: Array(bytes)) : nil
+        }
+    }
+
+    /// What the device says it can do, from the SuperSpeed (`0x03`) and
+    /// SuperSpeedPlus (`0x0A`) capabilities.
+    ///
+    /// Both are consulted: `0x03` is the one that says whether SuperSpeed
+    /// exists at all, and `0x0A` is the one that says how fast. A device with
+    /// neither reports nothing, which is the right answer for a genuinely
+    /// USB 2.0 device.
+    static func speeds(in bos: [UInt8]) -> SpeedCapability? {
+        var capability = SpeedCapability()
+        var found = false
+
+        _ = firstCapability(in: bos) { type, bytes -> Bool? in
+            let raw = Array(bytes)
+            // SuperSpeed USB Device Capability: wSpeedsSupported at offset 4,
+            // bit 3 being SuperSpeed.
+            if type == 0x03, raw.count >= 10 {
+                let speeds = UInt16(raw[4]) | UInt16(raw[5]) << 8
+                capability.supportsSuperSpeed = speeds & 0x08 != 0
+                found = true
+            }
+            if type == 0x0A, let gbps = superSpeedPlusGbps(from: raw) {
+                capability.declaredGbps = gbps
+                found = true
+            }
+            // Never satisfied, so the walk visits every capability.
+            return nil
+        }
+        return found ? capability : nil
+    }
+
+    /// The fastest sublink a SuperSpeedPlus capability declares.
+    ///
+    /// Each Sublink Speed Attribute is four bytes: a 16-bit mantissa in the top
+    /// half and a two-bit exponent selecting bps / Kbps / Mbps / Gbps. Both
+    /// devices to hand publish two attributes, a receive and a transmit lane,
+    /// each reading mantissa 10 with the Gbps exponent — which is the 10 Gbps
+    /// they are sold as.
+    static func superSpeedPlusGbps(from bytes: [UInt8]) -> Double? {
+        guard bytes.count >= 12 else { return nil }
+        let count = Int(bytes[4] & 0x1F) + 1
+        guard bytes.count >= 12 + count * 4 else { return nil }
+
+        var best: Double?
+        for index in 0..<count {
+            let offset = 12 + index * 4
+            let attribute = UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8
+                | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+            let mantissa = Double((attribute >> 16) & 0xFFFF)
+            guard mantissa > 0 else { continue }
+            // 0 bps, 1 Kbps, 2 Mbps, 3 Gbps.
+            let gbps: Double
+            switch (attribute >> 4) & 0b11 {
+            case 3: gbps = mantissa
+            case 2: gbps = mantissa / 1000
+            case 1: gbps = mantissa / 1_000_000
+            default: gbps = mantissa / 1_000_000_000
+            }
+            // A sublink faster than USB4's own ceiling is a misread, not a
+            // device: nothing on USB declares more than 80 Gbps.
+            guard gbps > 0, gbps <= 80 else { continue }
+            best = max(best ?? 0, gbps)
+        }
+        return best
     }
 
     /// Decodes one Billboard Capability Descriptor.
@@ -127,7 +225,7 @@ enum Billboard {
     /// per alternate mode. `bmConfigured` is a 32-byte bitmap carrying two bits
     /// per mode, least significant pair first, which is where the per-mode
     /// state comes from.
-    static func capability(from bytes: [UInt8]) -> BillboardCapability? {
+    static func billboardCapability(from bytes: [UInt8]) -> BillboardCapability? {
         let fixed = 44
         guard bytes.count >= fixed else { return nil }
         let count = Int(bytes[4])
@@ -160,13 +258,14 @@ enum Billboard {
 
     // MARK: - Fetching
 
-    /// Reads and parses a device's Billboard capability, or nothing.
+    /// Everything Wattson reads out of one device's BOS descriptor.
     ///
     /// Cached by locationID, which is stable for as long as the device stays in
     /// the same port. The descriptor cannot change while a device is plugged
     /// in, and the alternative is two control transfers per device on every
     /// scan — the app rescans every one to two seconds.
-    static func capability(for service: io_service_t, locationID: Int) -> BillboardCapability? {
+    static func read(for service: io_service_t, locationID: Int)
+        -> (billboard: BillboardCapability?, speeds: SpeedCapability?) {
         cacheLock.lock()
         if let cached = cache[locationID] {
             cacheLock.unlock()
@@ -174,13 +273,14 @@ enum Billboard {
         }
         cacheLock.unlock()
 
-        let result = fetchBOS(service).flatMap(parse)
+        let bos = fetch(service)
+        let parsed = (billboard: bos.flatMap(billboard(in:)), speeds: bos.flatMap(speeds(in:)))
         cacheLock.lock()
-        // Stored even when nil: a device with no Billboard capability must not
-        // be asked again on every scan for the rest of its life in the port.
-        cache[locationID] = .some(result)
+        // Stored even when both are nil: a device with no BOS descriptor must
+        // not be asked again on every scan for the rest of its life in the port.
+        cache[locationID] = parsed
         cacheLock.unlock()
-        return result
+        return parsed
     }
 
     /// Drops anything no longer plugged in, so the cache tracks the machine
@@ -192,7 +292,7 @@ enum Billboard {
     }
 
     private static let cacheLock = NSLock()
-    private static var cache: [Int: BillboardCapability?] = [:]
+    private static var cache: [Int: (billboard: BillboardCapability?, speeds: SpeedCapability?)] = [:]
 
     // The IOUSBLib plug-in UUIDs. The C headers define these as macros Swift
     // cannot import, so they are rebuilt from their bytes.
@@ -206,7 +306,7 @@ enum Billboard {
         0x5C, 0x81, 0x87, 0xD0, 0x9E, 0xF3, 0x11, 0xD4,
         0x8B, 0x45, 0x00, 0x0A, 0x27, 0x05, 0x28, 0x61)
 
-    private static func fetchBOS(_ service: io_service_t) -> [UInt8]? {
+    private static func fetch(_ service: io_service_t) -> [UInt8]? {
         var plugIn: UnsafeMutablePointer<UnsafeMutablePointer<IOCFPlugInInterface>?>?
         var score: Int32 = 0
         guard IOCreatePlugInInterfaceForService(

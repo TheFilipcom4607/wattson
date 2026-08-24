@@ -58,10 +58,14 @@ struct DeviceNode: Identifiable, Hashable {
     var controller: Int?
     /// Fastest link in Mbit/s, for sorting and the menu bar title.
     var speedMbps: Double?
-    /// `bcdUSB` as the device reports it — 0x0320 is USB 3.2. Kept as the
-    /// number as well as the `version` string because the comparison against
-    /// what the link actually negotiated is arithmetic, not text.
+    /// `bcdUSB` as the device reports it — 0x0320 is USB 3.2. Describes the
+    /// enumeration that happened, *not* what the device can do: a SuperSpeed
+    /// device that came up on a USB 2.0 cable reports 0x0210. `speedCapability`
+    /// is the one to compare a negotiated rate against.
     var usbSpecBCD: Int?
+    /// What the device's BOS descriptor says it can do, which survives having
+    /// enumerated slowly. Nil on a device carrying no BOS descriptor.
+    var speedCapability: SpeedCapability?
     /// Why this device did not get the link it declares it can do. Nil is the
     /// normal answer, including for every device running at its own maximum.
     var linkVerdict: LinkVerdict?

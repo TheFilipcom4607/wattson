@@ -2,20 +2,31 @@ import Foundation
 
 /// Why a device did not get the link it says it is capable of.
 ///
-/// Wattson already reads both halves of this and has never put them next to
-/// each other: `bcdUSB` is the specification the device declares conformance
-/// to, and `UsbLinkSpeed` is the rate its link actually came up at. A device
-/// declaring USB 3.x that enumerated at 480 Mbps has demonstrably not got its
-/// SuperSpeed pairs, and that is the whole of "why is the dock's ethernet
-/// crawling" — a question the panel could show every number relevant to
-/// without ever answering.
+/// The device's claim comes from its BOS descriptor and the rate it got comes
+/// from `UsbLinkSpeed`. A device whose BOS declares SuperSpeed and which
+/// enumerated at 480 Mbps has demonstrably not got its SuperSpeed pairs, and
+/// that is the whole of "why is the dock's ethernet crawling" — a question the
+/// panel could show every number relevant to without ever answering.
 ///
-/// The test is a tier test rather than a rate test, and deliberately so.
-/// `bcdUSB` states which specification a device conforms to, not how fast it
-/// is: a USB 3.2 device is entitled to run at 5 Gbps and plenty do, so
-/// "declared 3.2, negotiated 5 Gbps" is evidence of nothing. Falling all the
-/// way back to High Speed is different — there is no reading of that where the
-/// SuperSpeed pairs are working.
+/// The claim deliberately does **not** come from `bcdUSB`, and the reason is
+/// worth keeping. `bcdUSB` looked like exactly the right field and is not: it
+/// describes the enumeration that happened rather than the device's
+/// capability. A SuperSpeed device on a USB 2.0 cable trains only on D+/D- and
+/// reports itself as USB 2.1, so a test built on `bcdUSB` can never fire for
+/// the one case it exists to catch. An iPhone 16 Pro on a USB 2.0 cable is
+/// that case and is what caught it: `bcdUSB` 0x0210, 480 Mbps, and a BOS
+/// descriptor declaring SuperSpeed and 10 Gbps. The 0x0210 is itself the tell
+/// — USB 2.1 means "this device has a BOS descriptor".
+///
+/// A Ugreen NVMe enclosure on the other port is the control: the same 10 Gbps
+/// claim in its BOS, and 10 Gbps actually negotiated. It must stay silent, and
+/// it does.
+///
+/// The test is a tier test rather than a rate test, deliberately. Devices
+/// declare a top sublink speed and are entitled to run below it, so
+/// "claims 10 Gbps, negotiated 5 Gbps" is evidence of nothing. Falling all the
+/// way back to High Speed is different — there is no reading of 480 Mbps where
+/// the SuperSpeed pairs are working.
 ///
 /// The inference runs one way, like the display compression verdict it sits
 /// beside. Losing SuperSpeed proves something took it; keeping SuperSpeed
@@ -46,7 +57,8 @@ struct LinkVerdict: Hashable {
         case unattributed
     }
 
-    /// The specification the device declares, as it declares it: "USB 3.2".
+    /// What the device's own BOS descriptor claims: "10 Gbps", or plain
+    /// "SuperSpeed" where it declares the pairs but not a rate.
     let declared: String
     /// The rate the link actually came up at.
     let negotiatedMbps: Double
@@ -57,19 +69,19 @@ struct LinkVerdict: Hashable {
         let got = SpeedFormat.usbLabel(mbps: negotiatedMbps)
         switch cause {
         case .displayTookTheLanes:
-            return "Declares \(declared), running at \(got) — the display has both high-speed lanes"
+            return "Claims \(declared), running at \(got) — the display has both high-speed lanes"
         case .cableIsUSB2(let chip):
             // The chip's vendor, not the cable's brand: a PD e-marker has
             // nowhere to publish the name on the jacket. See
             // `CableEMarker.vendorName`.
             let whose = chip.map { " (\($0))" } ?? ""
-            return "Declares \(declared), running at \(got) — the cable's own chip\(whose) says USB 2.0"
+            return "Claims \(declared), running at \(got) — the cable's own chip\(whose) says USB 2.0"
         case .behindHub(let name):
-            return "Declares \(declared), running at \(got) — everything behind \(name) is"
+            return "Claims \(declared), running at \(got) — everything behind \(name) is"
         case .portHasNoUSB3:
-            return "Declares \(declared), running at \(got) — this port does not carry USB 3"
+            return "Claims \(declared), running at \(got) — this port does not carry USB 3"
         case .unattributed:
-            return "Declares \(declared), running at \(got) — something between them is USB 2.0 only"
+            return "Claims \(declared), running at \(got) — something between them is USB 2.0 only"
         }
     }
 
@@ -112,14 +124,19 @@ enum LinkBottleneck {
 
     /// One device's verdict. Pure, so `--selftest` drives exactly this.
     static func verdict(for node: DeviceNode, port: PortInfo?, behind hub: String?) -> LinkVerdict? {
-        // Both halves have to be present. A device that declares no
-        // specification, or whose link speed the controller did not report, is
-        // one there is nothing to compare.
-        guard let bcd = node.usbSpecBCD, let mbps = node.speedMbps else { return nil }
-        guard bcd >= 0x0300 else { return nil }
+        // Both halves have to be present. A device that published no BOS
+        // descriptor, or whose link speed the controller did not report, is one
+        // there is nothing to compare. A genuinely USB 2.0 device is the first
+        // of those and is meant to fall out here.
+        guard let capability = node.speedCapability, capability.supportsSuperSpeed,
+              let mbps = node.speedMbps
+        else { return nil }
         guard mbps < superSpeedMbps * 0.95 else { return nil }
 
-        let declared = SpeedFormat.usbVersion(bcd: bcd)
+        // The rate sharpens the wording where the device published one; the
+        // verdict itself turns on the SuperSpeed bit either way.
+        let declared = capability.declaredGbps
+            .map { String(format: "%g Gbps", $0) } ?? "SuperSpeed"
         return LinkVerdict(
             declared: declared,
             negotiatedMbps: mbps,

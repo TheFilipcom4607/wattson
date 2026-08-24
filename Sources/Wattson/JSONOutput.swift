@@ -271,6 +271,10 @@ enum JSONOutput {
             // Present only when a device declared SuperSpeed and did not get
             // it. A device running at its own maximum emits no key.
             "linkBottleneck": node.linkVerdict?.summary,
+            // What the device's BOS descriptor claims it can do, which is not
+            // what `version` says: that is the enumeration that happened.
+            "claimsGbps": node.speedCapability?.declaredGbps,
+            "claimsSuperSpeed": node.speedCapability?.supportsSuperSpeed,
             "isApple": node.isApple,
             // A device with no serial is keyed on where it is plugged in, and
             // anything scripting against this needs to know which it got.

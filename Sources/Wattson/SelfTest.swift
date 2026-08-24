@@ -237,7 +237,7 @@ enum SelfTest {
             (svid: 0xFF01, index: 0, state: BillboardMode.State.failed.rawValue),
             (svid: 0x8087, index: 1, state: BillboardMode.State.succeeded.rawValue),
         ])
-        guard let capability = Billboard.parse(bos: bos) else {
+        guard let capability = BOSDescriptor.billboard(in: bos) else {
             checks.append(Check(name: "billboard: the capability is found inside the BOS descriptor",
                                 passed: false, detail: "parse returned nil"))
             return checks
@@ -266,7 +266,7 @@ enum SelfTest {
             modes: [(svid: 0xFF01, index: 0, state: BillboardMode.State.succeeded.rawValue)],
             failureInfo: 0)
         checks.append(Check(name: "billboard: a mode that came up is not worth a line",
-                            passed: Billboard.parse(bos: working)?.summary == nil))
+                            passed: BOSDescriptor.billboard(in: working)?.summary == nil))
 
         // The guard that stands in for a real capture: a descriptor claiming a
         // different number of modes than its own length accounts for has not
@@ -274,13 +274,13 @@ enum SelfTest {
         let inconsistent = billboardDescriptor(
             modes: [(svid: 0xFF01, index: 0, state: 2)], claimedModeCount: 3)
         checks.append(Check(name: "billboard: a descriptor that does not add up is refused",
-                            passed: Billboard.parse(bos: inconsistent) == nil))
+                            passed: BOSDescriptor.billboard(in: inconsistent) == nil))
 
         checks.append(Check(name: "billboard: a device with no BOS descriptor reports nothing",
-                            passed: Billboard.parse(bos: [0, 0, 0, 0, 0]) == nil))
+                            passed: BOSDescriptor.billboard(in: [0, 0, 0, 0, 0]) == nil))
         // A zero-length capability descriptor would walk the BOS list forever.
         checks.append(Check(name: "billboard: a zero-length capability does not hang the walk",
-                            passed: Billboard.parse(bos: [5, 0x0F, 9, 0, 1, 0, 0x10, 0x0D, 0]) == nil))
+                            passed: BOSDescriptor.billboard(in: [5, 0x0F, 9, 0, 1, 0, 0x10, 0x0D, 0]) == nil))
         return checks
     }
 
@@ -297,30 +297,105 @@ enum SelfTest {
         return emarker
     }
 
-    private static func device(bcd: Int?, mbps: Double?, name: String = "Ethernet") -> DeviceNode {
+    /// A device carrying the BOS descriptor read off the real hardware.
+    private static func device(bos: [UInt8]?, mbps: Double?, name: String = "Device") -> DeviceNode {
         var node = DeviceNode(name: name, kind: .usb)
-        node.usbSpecBCD = bcd
+        node.speedCapability = bos.flatMap(BOSDescriptor.speeds(in:))
         node.speedMbps = mbps
         return node
     }
 
+    /// The iPhone 16 Pro's BOS descriptor, 70 bytes across four capabilities,
+    /// read while it was charging off this Mac through a USB 2.0 cable.
+    ///
+    /// The platform capability's payload is zeroed: nothing here reads it, only
+    /// its length matters to the walk, and it is device-specific data that has
+    /// no business in a checked-in fixture. Everything else is verbatim.
+    private static let iPhoneBOS: [UInt8] = [
+        0x05, 0x0f, 0x46, 0x00, 0x04,                                     // BOS, 70 bytes, 4 caps
+        0x07, 0x10, 0x02, 0x02, 0x00, 0x00, 0x00,                         // USB 2.0 extension
+        0x1c, 0x10, 0x05, 0x00,                                           // platform capability
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x0a, 0x10, 0x03, 0x00, 0x0e, 0x00, 0x01, 0x0a, 0xff, 0x07,       // SuperSpeed
+        0x14, 0x10, 0x0a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x11,       // SuperSpeedPlus
+        0x00, 0x00, 0x30, 0x40, 0x0a, 0x00, 0xb0, 0x40, 0x0a, 0x00,
+    ]
+
+    /// The Ugreen NVMe enclosure's, 42 bytes across three capabilities, read at
+    /// the same moment on the other port. Verbatim.
+    private static let ugreenBOS: [UInt8] = [
+        0x05, 0x0f, 0x2a, 0x00, 0x03,
+        0x07, 0x10, 0x02, 0x06, 0x00, 0x00, 0x00,
+        0x0a, 0x10, 0x03, 0x00, 0x0e, 0x00, 0x01, 0x0a, 0xff, 0x07,
+        0x14, 0x10, 0x0a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x11,
+        0x00, 0x00, 0x30, 0x40, 0x0a, 0x00, 0xb0, 0x40, 0x0a, 0x00,
+    ]
+
+    /// A device that really is USB 2.0: a BOS with no SuperSpeed capability in
+    /// it at all. Built rather than captured — every device to hand turned out
+    /// to be SuperSpeed-capable.
+    private static let usb2OnlyBOS: [UInt8] = [
+        0x05, 0x0f, 0x0c, 0x00, 0x01,
+        0x07, 0x10, 0x02, 0x02, 0x00, 0x00, 0x00,
+    ]
+
     private static func linkBottleneckChecks() -> [Check] {
         var checks: [Check] = []
-        let fallen = device(bcd: 0x0320, mbps: 480)
 
-        // Nothing to explain: a device running at the tier it declares.
-        checks.append(Check(name: "link: a device at its own speed is not a fault",
-                            passed: LinkBottleneck.verdict(
-                                for: device(bcd: 0x0320, mbps: 5000), port: nil, behind: nil) == nil))
-        checks.append(Check(name: "link: a USB 2.0 device at 480 Mbps is not a fault",
-                            passed: LinkBottleneck.verdict(
-                                for: device(bcd: 0x0200, mbps: 480), port: nil, behind: nil) == nil))
-        checks.append(Check(name: "link: a device whose rate was never reported says nothing",
-                            passed: LinkBottleneck.verdict(
-                                for: device(bcd: 0x0320, mbps: nil), port: nil, behind: nil) == nil))
+        // Both devices publish the same claim, and the enclosure was measured
+        // running at it. That is what makes this self-validating rather than a
+        // remembered number: the parse is right only if the figure it pulls out
+        // of the descriptor equals the rate the controller independently
+        // reported for the device that actually got it.
+        let ugreen = BOSDescriptor.speeds(in: ugreenBOS)
+        checks.append(Check(
+            name: "bos: the claimed rate equals the rate the enclosure was measured at",
+            passed: ugreen?.declaredGbps == 10 && ugreen?.supportsSuperSpeed == true,
+            detail: "got \(show(ugreen?.declaredGbps)) Gbps, superSpeed=\(ugreen?.supportsSuperSpeed.description ?? "nil")"))
+        let iPhone = BOSDescriptor.speeds(in: iPhoneBOS)
+        checks.append(Check(
+            name: "bos: the phone claims the same, having enumerated at 480 Mbps",
+            passed: iPhone?.declaredGbps == 10 && iPhone?.supportsSuperSpeed == true,
+            detail: "got \(show(iPhone?.declaredGbps)) Gbps, superSpeed=\(iPhone?.supportsSuperSpeed.description ?? "nil")"))
+        // Nil rather than a false: the device published no speed capability at
+        // all, which is a different statement from one that published a
+        // capability saying no. Both fall out of the verdict; only one of them
+        // is a claim the device made.
+        checks.append(Check(name: "bos: a genuinely USB 2.0 device claims nothing about speed",
+                            passed: BOSDescriptor.speeds(in: usb2OnlyBOS) == nil,
+                            detail: "got \(String(describing: BOSDescriptor.speeds(in: usb2OnlyBOS)))"))
+        // The platform capability sits between the header and the SuperSpeed
+        // one on the phone and not on the enclosure, so the walk has to step
+        // over a capability it does not understand to reach either.
+        checks.append(Check(name: "bos: an unknown capability is stepped over, not tripped on",
+                            passed: iPhone?.declaredGbps == ugreen?.declaredGbps))
 
-        // The cable's own chip declaring USB 2.0 is the cable admitting it has
-        // no SuperSpeed pairs in it.
+        // The control. Same claim, and it got what it claimed.
+        checks.append(Check(
+            name: "link: the enclosure ran at 10 Gbps and is not a fault",
+            passed: LinkBottleneck.verdict(
+                for: device(bos: ugreenBOS, mbps: 10_000), port: nil, behind: nil) == nil))
+        checks.append(Check(
+            name: "link: a device that claims SuperSpeed and got 5 Gbps is not a fault",
+            passed: LinkBottleneck.verdict(
+                for: device(bos: ugreenBOS, mbps: 5000), port: nil, behind: nil) == nil))
+        checks.append(Check(
+            name: "link: a genuinely USB 2.0 device at 480 Mbps is not a fault",
+            passed: LinkBottleneck.verdict(
+                for: device(bos: usb2OnlyBOS, mbps: 480), port: nil, behind: nil) == nil))
+        checks.append(Check(
+            name: "link: a device with no BOS descriptor says nothing",
+            passed: LinkBottleneck.verdict(
+                for: device(bos: nil, mbps: 480), port: nil, behind: nil) == nil))
+        checks.append(Check(
+            name: "link: a device whose rate was never reported says nothing",
+            passed: LinkBottleneck.verdict(
+                for: device(bos: iPhoneBOS, mbps: nil), port: nil, behind: nil) == nil))
+
+        // The case the whole thing exists for, as it actually happened: the
+        // phone on the Baseus cable, whose chip declares USB 2.0.
+        let fallen = device(bos: iPhoneBOS, mbps: 480, name: "iPhone")
         var usb2Port = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
         usb2Port.transportsSupported = ["CC", "USB2", "USB3", "CIO"]
         usb2Port.emarker = cable(speedRung: 0b000)
@@ -329,7 +404,7 @@ enum SelfTest {
                             passed: blamed?.cause == .cableIsUSB2(chip: "Apple"),
                             detail: "got \(blamed.map { String(describing: $0.cause) } ?? "nil")"))
         checks.append(Check(name: "link: the verdict states both figures",
-                            passed: blamed?.summary.contains("USB 3.2") == true
+                            passed: blamed?.summary.contains("10 Gbps") == true
                                 && blamed?.summary.contains("480 Mbps") == true,
                             detail: blamed?.summary ?? "nil"))
 
@@ -356,9 +431,9 @@ enum SelfTest {
         // One cable, one accusation. A hub that lost SuperSpeed explains
         // everything under it, and the devices point at the hub rather than
         // each repeating the charge against the cable.
-        var hub = device(bcd: 0x0320, mbps: 480, name: "USB2.0 Hub")
-        hub.children = [device(bcd: 0x0320, mbps: 480, name: "Ethernet"),
-                        device(bcd: 0x0320, mbps: 480, name: "Card reader")]
+        var hub = device(bos: iPhoneBOS, mbps: 480, name: "USB2.0 Hub")
+        hub.children = [device(bos: ugreenBOS, mbps: 480, name: "Enclosure"),
+                        device(bos: iPhoneBOS, mbps: 480, name: "Card reader")]
         var tree = [hub]
         LinkBottleneck.annotate(&tree, port: usb2Port)
         checks.append(Check(name: "link: the hub is the one blamed for the cable",

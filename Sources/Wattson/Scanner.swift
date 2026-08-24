@@ -49,10 +49,13 @@ enum Scanner {
             }
             node.isApple = node.vendorID == 0x05AC
             node.controller = (location >> 24) & 0xFF
-            // The device's own account of an alt mode that failed. Cached by
-            // location, so this costs two control transfers once per device
-            // rather than twice per device per scan.
-            node.altModeFailure = Billboard.capability(for: service, locationID: location)?.summary
+            // One BOS read per device, cached by location, so this costs two
+            // control transfers once per device rather than twice per device
+            // per scan. It answers two questions: what became of an alternate
+            // mode, and how fast the device says it can go.
+            let descriptors = BOSDescriptor.read(for: service, locationID: location)
+            node.altModeFailure = descriptors.billboard?.summary
+            node.speedCapability = descriptors.speeds
             node.typeLabel = functionLabel(for: service, properties: properties)
 
             if let bits = (properties["UsbLinkSpeed"] as? NSNumber)?.doubleValue, bits > 0 {
@@ -80,7 +83,7 @@ enum Scanner {
         }
 
         // Anything unplugged since the last scan stops being worth remembering.
-        Billboard.forget(except: Set(order))
+        BOSDescriptor.forget(except: Set(order))
 
         // A locationID encodes the port path: 0x01210000 hangs off 0x01200000.
         var roots: [DeviceNode] = []
