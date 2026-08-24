@@ -193,9 +193,3 @@ enum PortStatsMonitor {
     }
 }
 
-/// One heading's worth of fault counters, as the panel renders them.
-struct PortFaultGroup: Identifiable {
-    let id: String
-    let name: String
-    let entries: [(name: String, count: Int)]
-}

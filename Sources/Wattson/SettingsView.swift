@@ -103,6 +103,7 @@ struct SettingsView: View {
             group("What to announce") {
                 Toggle("Chargers", isOn: $model.announcePower)
                 Toggle("Warn when the battery drains on a charger", isOn: $model.warnBatteryDrain)
+                Toggle("Warn when liquid is detected in a port", isOn: $model.warnLiquid)
                     .disabled(!model.announcePower)
                     .padding(.leading, 16)
                 Toggle("Contract changes", isOn: $model.announceContract)

@@ -105,6 +105,16 @@ struct CableEMarker: Hashable {
         return amps * min(volts, 48)
     }
 
+    /// Who made it, when the ID is one the app carries a name for.
+    ///
+    /// Falls back to the hex rather than to nothing: an unrecognised vendor ID
+    /// is still the manufacturer's registered ID, and it is what someone would
+    /// paste into a search. Nil only when the endpoint published no ID at all.
+    var vendorName: String? {
+        guard let vendorID else { return nil }
+        return Scanner.vendorName(forID: vendorID) ?? String(format: "0x%04X", vendorID)
+    }
+
     /// The USB-IF XID from the Cert Stat VDO, which is VDO[1]. Zero means the
     /// cable never went through certification — common, and not a fault.
     var certificationXID: UInt32? {
@@ -133,6 +143,43 @@ struct CableEMarker: Hashable {
 
     /// True when the node was found but carries nothing to decode.
     var contentsWithheld: Bool { vdos.isEmpty }
+}
+
+/// What the port controller's liquid-detection circuit reports.
+///
+/// Every USB-C port on an Apple silicon Mac has one: an `LDCM` node sitting
+/// beside the port's other children, measuring the connector itself. macOS
+/// surfaces this only as a system alert at the moment it fires, and nowhere at
+/// all afterwards — so a machine that has silently disabled charging on a port
+/// gives you nothing to look at.
+///
+/// Matched on `FeatureTypeDescription` rather than the node's class, which is
+/// versioned (`AppleHPMLDCMType2` today). A future Type3 keeps working.
+struct LiquidDetection: Hashable {
+    /// The finding. False is a real answer here, not an absence.
+    var detected = false
+    /// The controller's own words for how it is being driven, e.g.
+    /// "Hardware Controlled".
+    var state: String?
+    /// Whether the controller is allowed to act on a detection at all.
+    var mitigationsEnabled = false
+    /// Whether it is acting on one right now — this is what actually cuts a
+    /// port's power and data.
+    var mitigationsActive = false
+    /// The user having told macOS to use the port anyway.
+    var userOverride = false
+
+    /// Worth saying out loud: liquid found, or the port being held down.
+    var isNoteworthy: Bool { detected || mitigationsActive }
+
+    var summary: String? {
+        guard isNoteworthy else { return nil }
+        if detected && mitigationsActive {
+            return "Liquid detected — this port is being held down"
+        }
+        if detected { return "Liquid detected in this port" }
+        return "This port is being held down by liquid mitigation"
+    }
 }
 
 /// The state of one physical port on the Mac.
@@ -204,6 +251,32 @@ struct PortInfo: Identifiable, Hashable {
     var authorization: String?
     /// The Thunderbolt controller fronting this port, when there is one.
     var thunderbolt: ThunderboltLink?
+    /// The connector's own liquid-detection circuit. Nil on ports that have
+    /// none, which is every MagSafe port.
+    var liquid: LiquidDetection?
+    /// How this port's two high-speed lanes are currently assigned.
+    var phy: PhyLink?
+    /// The display on the other end, set only when exactly one external
+    /// display and exactly one DisplayPort-carrying port make the pairing
+    /// unambiguous.
+    var display: DisplayInfo?
+
+    /// The picture is being compressed to fit the link it negotiated.
+    ///
+    /// Stated only from the one-way inference: a mode whose uncompressed floor
+    /// exceeds the link's capacity, which is nonetheless being displayed, is
+    /// being compressed. Nothing is ever said about a mode that appears to fit.
+    var displayCompression: String? {
+        guard let display, let gbps = phy?.displayGbps else { return nil }
+        return display.compressionVerdict(linkGbps: gbps)
+    }
+
+    /// Everything on this connector is on USB 2.0 because the display took
+    /// both high-speed lanes. Only worth saying when something is actually
+    /// connected — an idle port's lanes are parked, not contended.
+    var displayIsUsingAllLanes: Bool {
+        isConnected && (phy?.takesAllLanesForDisplay ?? false)
+    }
 
     /// What the Thunderbolt link actually came up at.
     ///
@@ -346,6 +419,7 @@ enum PortMonitor {
         let vbus = SMCMonitor.portPower()
         // One read for the whole machine rather than one per port.
         let thunderbolt = ThunderboltMonitor.read()
+        let phys = PhyMonitor.read()
         var ports: [PortInfo] = []
         while case let service = IOIteratorNext(iterator), service != 0 {
             defer { IOObjectRelease(service) }
@@ -372,7 +446,16 @@ enum PortMonitor {
             // same controllers, and they agree on this Mac. Neither says
             // anything about where the port is on the case — the same caveat
             // that applies to every port number here.
-            if kind == .usbC, let number { port.thunderbolt = thunderbolt[number] }
+            if kind == .usbC, let number {
+                port.thunderbolt = thunderbolt[number]
+                // The PHY index is zero-based where HPM port numbers start at
+                // one, and there is one of each per port. Same class of
+                // assumption as every other port mapping here — and it fails
+                // safe: a wrong mapping puts the lane state on a port with
+                // nothing plugged into it, where it is suppressed rather than
+                // shown against the wrong device.
+                port.phy = phys[number - 1]
+            }
             port.transportsActive = properties["TransportsActive"] as? [String] ?? []
             port.transportsSupported = properties["TransportsSupported"] as? [String] ?? []
             port.isActiveCable = properties["ActiveCable"] as? Bool ?? false
@@ -385,8 +468,19 @@ enum PortMonitor {
 
             collectPowerDelivery(under: service, into: &port, depth: 0)
             collectIdentities(under: service, into: &port, depth: 0)
+            collectLiquidDetection(under: service, into: &port, depth: 0)
             collectTransportState(under: service, into: &port, depth: 0)
             ports.append(port)
+        }
+
+        // Attribute the one external display to the one port carrying
+        // DisplayPort, and only then. Two displays, or two ports with lanes
+        // assigned, and there is nothing here that says which goes with which
+        // — the same rule PowerAttribution follows for measured VBUS.
+        let displays = DisplayMonitor.read()
+        let carrying = ports.indices.filter { ports[$0].phy?.displayGbps != nil }
+        if carrying.count == 1, let display = DisplayMonitor.soleExternal(from: displays) {
+            ports[carrying[0]].display = display
         }
 
         // Connected ports first, then by name, so the interesting one is on top.
@@ -499,6 +593,39 @@ enum PortMonitor {
             }
             collectIdentities(under: child, into: &port, depth: depth + 1)
         }
+    }
+
+    /// Finds the port's liquid-detection node, which sits alongside its
+    /// transports rather than under them.
+    private static func collectLiquidDetection(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
+        guard depth < 3, port.liquid == nil else { return }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        while case let child = IOIteratorNext(iterator), child != 0 {
+            defer { IOObjectRelease(child) }
+            if let properties = properties(of: child),
+               properties["FeatureTypeDescription"] as? String == "LDCM" {
+                port.liquid = liquidDetection(from: properties)
+                return
+            }
+            collectLiquidDetection(under: child, into: &port, depth: depth + 1)
+            if port.liquid != nil { return }
+        }
+    }
+
+    /// Decodes one `LDCM` node. Split from the walk so captures replay through it.
+    static func liquidDetection(from properties: [String: Any]) -> LiquidDetection {
+        var liquid = LiquidDetection()
+        liquid.detected = properties["LiquidDetected"] as? Bool ?? false
+        liquid.state = (properties["StateDescription"] as? String)?.nilIfEmpty
+        liquid.mitigationsEnabled = properties["MitigationsEnabled"] as? Bool ?? false
+        // A status of zero is the circuit sitting quiet; anything else is it
+        // having taken action.
+        liquid.mitigationsActive = (properties["MitigationsStatus"] as? NSNumber)?.intValue ?? 0 != 0
+        liquid.userOverride = properties["UserOverrideActive"] as? Bool ?? false
+        return liquid
     }
 
     /// Keeps whichever of two readings of the same endpoint actually says

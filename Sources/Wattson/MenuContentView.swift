@@ -403,10 +403,6 @@ struct MenuContentView: View {
                     }
                 }
 
-                if model.showDebugOptions, !model.portFaults.isEmpty {
-                    PortFaultSection(faults: model.portFaults)
-                }
-
                 if model.showPortLimits, let limits = model.portLimitsSummary {
                     Text(limits)
                         .font(.system(size: 10))
@@ -1252,48 +1248,5 @@ private struct MenuButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-    }
-}
-
-/// Lifetime fault counters, shown only when something has actually gone wrong
-/// and only with debug options on.
-///
-/// Behind the setting because a counter is history, not a reading: it can name
-/// a fault that happened once eighteen months ago, and there is nothing to be
-/// done about most of them. It earns its place when a dock keeps dropping off
-/// and there is otherwise no evidence at all that it ever happened.
-private struct PortFaultSection: View {
-    let faults: [PortFaultGroup]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("RECORDED FAULTS")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-            ForEach(faults) { group in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(group.name)
-                        .font(.system(size: 10, weight: .medium))
-                    ForEach(group.entries, id: \.name) { entry in
-                        HStack(spacing: 4) {
-                            Text(entry.name)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 8)
-                            Text("\(entry.count)")
-                                .font(.system(size: 10))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            Text("Counted since the machine was built, and never reset. "
-                 + "The controller does not say which physical port each set belongs to.")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 4)
     }
 }

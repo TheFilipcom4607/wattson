@@ -132,6 +132,13 @@ enum Scanner {
         return nil
     }
 
+    /// The curated table, by numeric ID.
+    ///
+    /// PD Discover Identity endpoints publish a vendor ID and no name at all —
+    /// a cable's chip has nowhere to put a string — so this is the only route
+    /// from an e-marker to a manufacturer.
+    static func vendorName(forID id: Int) -> String? { knownVendors[id] }
+
     /// Thunderbolt entries often carry only a hex vendor id string.
     static func vendorName(forHex raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
@@ -178,6 +185,10 @@ enum Scanner {
         0x1A40: "Terminus Technology", 0x1A86: "QinHeng", 0x1B1C: "Corsair",
         0x1BCF: "Sunplus", 0x1D6B: "Linux Foundation", 0x1F75: "Innostor",
         0x2001: "D-Link", 0x20C2: "Diodes", 0x2109: "VIA Labs",
+        // Cable and charger e-marker vendors seen in probes/. These turn up
+        // only now that the chips can be read, and never as a name: a PD
+        // endpoint publishes a number and nothing else.
+        0x06AD: "Greatland Electronics", 0x2F16: "Shenzhen Kejinming",
         0x2188: "Sonix", 0x2207: "Rockchip", 0x2357: "TP-Link",
         0x2717: "Xiaomi", 0x28DE: "Valve", 0x2E8A: "Raspberry Pi",
         0x2E99: "Anker", 0x2ECC: "Cypress", 0x413C: "Dell", 0x8087: "Intel"

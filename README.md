@@ -143,6 +143,24 @@ Control Center › Battery.
   the cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
+- **How the port's two high-speed lanes are actually assigned**, which is the
+  real answer to "why is the dock's ethernet crawling when the monitor is
+  plugged in". DisplayPort alt mode takes lanes; take both and USB 3 has no
+  wires left, so everything on that connector drops to USB 2.0 whether or not
+  it is capable of more. The port still advertises USB 3 as supported the whole
+  time, because the port is still capable of it — nothing else on the Mac tells
+  you this.
+- **Whether the picture is being compressed.** When a display's mode needs more
+  bandwidth uncompressed than the link it negotiated can carry, and it is being
+  displayed anyway, it is being compressed. That inference only runs one way:
+  the figure Wattson computes is a floor — real timings need more — so
+  exceeding it proves the mode does not fit, while coming in under it proves
+  nothing. It will tell you a link is demonstrably too narrow. It will never
+  tell you one is adequate.
+- **Liquid in a connector.** Every USB-C port has a detection circuit, and macOS
+  shows its own alert the moment it fires and nothing afterwards — so a port
+  that has quietly stopped charging leaves nothing to go and look at. Wattson
+  says which port, and keeps saying it while the condition holds.
 - **What the Thunderbolt controller behind each port is**, and what the link
   actually came up at when one is running. The port's transport list says what a
   port is *capable* of and reads the same whether it is empty or carrying a dock;

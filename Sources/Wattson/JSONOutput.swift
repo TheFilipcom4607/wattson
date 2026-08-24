@@ -29,6 +29,11 @@ enum JSONOutput {
         ]
         root["deviceCount"] = scan.deviceCount
 
+        // Only what has actually gone wrong. A machine where nothing ever has
+        // emits no key at all rather than a wall of zeroes.
+        let faults = faultObjects()
+        if !faults.isEmpty { root["recordedFaults"] = faults }
+
         guard let data = try? JSONSerialization.data(
             withJSONObject: root, options: [.prettyPrinted, .sortedKeys]
         ), let text = String(data: data, encoding: .utf8) else {
@@ -38,6 +43,26 @@ enum JSONOutput {
     }
 
     // MARK: - Sections
+
+    private static func faultObjects() -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        for stats in PortStatsMonitor.readControllers() where stats.hasFaults {
+            out.append([
+                // Numbered by position in the controller's own array, which is
+                // all the identity it gives us — not a physical port.
+                "controller": stats.index + 1,
+                "counts": Dictionary(uniqueKeysWithValues: stats.faultCounts.map { ($0.name, $0.count) }),
+            ])
+        }
+        for stats in PortStatsMonitor.readUSBPorts() where stats.hasFaults {
+            var entry: [String: Any] = [
+                "counts": Dictionary(uniqueKeysWithValues: stats.faultCounts.map { ($0.name, $0.count) }),
+            ]
+            if let number = stats.portNumber { entry["usbPort"] = number }
+            out.append(entry)
+        }
+        return out
+    }
 
     private static func powerObject(_ power: PowerSnapshot) -> [String: Any] {
         var object = compact([
@@ -148,6 +173,39 @@ enum JSONOutput {
                 "achievedLanes": port.thunderboltAchieved == nil ? nil : link.currentWidth,
             ])
         }
+        if let phy = port.phy, port.isConnected {
+            object["lanes"] = compact([
+                "summary": phy.laneSummary,
+                "display": phy.displaySummary,
+                "displayLinkRate": phy.displayLinkRate ?? phy.displayTunnelRate,
+                "usb2Transport": phy.usb2Transport,
+                "displayUsingAllLanes": port.displayIsUsingAllLanes,
+                "assignments": phy.activeLanes.compactMap { lane -> [String: Any]? in
+                    guard let transport = lane.transport else { return nil }
+                    return ["lane": lane.name, "transport": transport]
+                },
+            ])
+        }
+        if let display = port.display {
+            object["display"] = compact([
+                "mode": display.modeSummary,
+                "pixelWidth": display.pixelWidth,
+                "pixelHeight": display.pixelHeight,
+                "refreshHz": display.refreshHz,
+                "minimumGbpsUncompressed": display.minimumGbps,
+                "compression": port.displayCompression,
+            ])
+        }
+        if let liquid = port.liquid {
+            object["liquidDetection"] = compact([
+                "detected": liquid.detected,
+                "mitigationsEnabled": liquid.mitigationsEnabled,
+                "mitigationsActive": liquid.mitigationsActive,
+                "userOverride": liquid.userOverride,
+                "state": liquid.state,
+                "summary": liquid.summary,
+            ])
+        }
         if let cable = port.emarker { object["cable"] = identityObject(cable) }
         if let partner = port.partner { object["partner"] = identityObject(partner) }
         return object
@@ -159,6 +217,7 @@ enum JSONOutput {
             // node that exists but says nothing is not the same as a rating.
             "contentsWithheld": identity.contentsWithheld,
             "vendorID": identity.vendorID,
+            "vendor": identity.vendorName,
             "productID": identity.productID,
             "productType": identity.productType,
             "productTypeDescription": identity.productTypeDescription,

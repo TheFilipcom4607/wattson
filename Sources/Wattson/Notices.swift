@@ -197,6 +197,7 @@ enum NoticeBuilder {
     static let adapterNoticeID = "power.adapter"
     static let drainNoticeID = "power.drain"
     static let contractNoticeID = "power.contract"
+    static let liquidNoticeID = "power.liquid"
 
     /// A charger going on. Posted the moment it is plugged in, while the PD
     /// contract is still being agreed, then updated once it is.
@@ -285,6 +286,23 @@ enum NoticeBuilder {
             symbol: "exclamationmark.triangle.fill",
             title: "Battery draining on the charger",
             detail: parts.joined(separator: " · ").nilIfEmpty
+        )
+    }
+
+    /// Liquid in a connector, or a port being held down because of it.
+    ///
+    /// macOS shows its own alert at the instant this fires and nothing
+    /// afterwards, so a port that has quietly stopped charging leaves no trace
+    /// anywhere you can go and look. This says which port, and stays sayable
+    /// for as long as the condition holds.
+    static func liquidDetected(_ port: PortInfo) -> Notice {
+        Notice(
+            id: "\(liquidNoticeID).\(port.id)",
+            category: .power,
+            symbol: "drop.triangle.fill",
+            title: port.liquid?.summary ?? "Liquid detected",
+            detail: [port.name, "Disconnect the cable and let the port dry."]
+                .joined(separator: " · ")
         )
     }
 }

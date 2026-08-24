@@ -146,9 +146,34 @@ enum Entry {
                 print("   Carrying:    \(port.activeSummary)")
                 print("   Cable:       \(port.cableWiringSummary)")
                 print("   Current:     \(port.currentRating)")
+                if let maker = port.emarker?.vendorName {
+                    print("   Cable made by: \(maker)")
+                }
             }
             if let supported = TransportName.best(port.transportsSupported) {
                 print("   Port max:   \(supported)")
+            }
+            if let partner = port.partner, let maker = partner.vendorName {
+                print("   Far end:     \(maker)"
+                      + (partner.productID.map { String(format: " · product 0x%04X", $0) } ?? ""))
+            }
+            if let lanes = port.phy?.laneSummary, port.isConnected {
+                print("   Lanes:       \(lanes)")
+            }
+            if let display = port.phy?.displaySummary, port.isConnected {
+                print("   Display:     \(display)")
+            }
+            if let display = port.display {
+                print("   Screen:      \(display.modeSummary)")
+            }
+            if let verdict = port.displayCompression {
+                print("   Compressed:  \(verdict)")
+            }
+            if port.displayIsUsingAllLanes {
+                print("   NOTE:        The display has both lanes; anything else here is on USB 2.0.")
+            }
+            if let liquid = port.liquid?.summary {
+                print("   LIQUID:      \(liquid)")
             }
             if let capability = port.thunderbolt?.capabilityLabel {
                 print("   TB link:     \(capability) controller")

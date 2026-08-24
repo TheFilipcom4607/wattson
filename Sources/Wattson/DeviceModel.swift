@@ -65,10 +65,6 @@ final class DeviceModel: ObservableObject {
             // Reading it costs a subprocess, so it is read when somebody is
             // about to look at it rather than on the timer.
             if isPresented { refreshLowPower() }
-            // Lifetime counters move a handful of times a year. Reading them
-            // on the power tick would be pure waste, so they are read when the
-            // panel opens, like Low Power Mode above.
-            if isPresented { refreshPortStats() }
             // Performance states are only worth subscribing to while somebody
             // is reading them, and the reader is nothing but a subscription and
             // one previous sample, so it costs nothing to build again.
@@ -224,6 +220,9 @@ final class DeviceModel: ObservableObject {
     /// Only ever fires on a battery that is genuinely going down while plugged
     /// in — never on the charger merely being smaller than the Mac could use.
     @Published var warnBatteryDrain: Bool { didSet { save(warnBatteryDrain, "warnBatteryDrain") } }
+    /// Liquid in a port. Defaults on: it is a hardware finding about damage in
+    /// progress, not an announcement about something being plugged in.
+    @Published var warnLiquid: Bool { didSet { save(warnLiquid, "warnLiquid") } }
     @Published var announceContract: Bool { didSet { save(announceContract, "announceContract") } }
     @Published var noticesInPanel: Bool {
         didSet { save(noticesInPanel, "noticesInPanel"); applyNoticeDelivery() }
@@ -278,6 +277,10 @@ final class DeviceModel: ObservableObject {
     /// already been said. One notice per stretch of draining, not one a second.
     private var drainingSince: Date?
     private var drainAnnounced = false
+    /// Ports already announced as wet, so a standing condition is not
+    /// re-announced every tick. A port dropping out of the set is what re-arms
+    /// it once the connector has dried.
+    private var liquidAnnounced: Set<String> = []
 
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.titleModeKey) ?? ""
@@ -293,6 +296,7 @@ final class DeviceModel: ObservableObject {
         announceStorage = Self.noticeFlag("announceStorage")
         announceDevices = Self.noticeFlag("announceDevices")
         warnBatteryDrain = Self.noticeFlag("warnBatteryDrain", default: true)
+        warnLiquid = Self.noticeFlag("warnLiquid", default: true)
         announceContract = Self.noticeFlag("announceContract", default: true)
         noticesInPanel = Self.noticeFlag("noticesInPanel", default: true)
         noticesInCenter = Self.noticeFlag("noticesInCenter", default: false)
@@ -760,6 +764,7 @@ final class DeviceModel: ObservableObject {
 
         noteContractChange(from: previous)
         noteDrainOnCharger()
+        noteLiquid()
     }
 
     /// Whether there is anything worth printing yet: a rating, and either a
@@ -804,41 +809,20 @@ final class DeviceModel: ObservableObject {
         post(NoticeBuilder.drainingOnCharger(power))
     }
 
-    // MARK: - Recorded faults
-
-    @Published private(set) var controllerStats: [PortControllerStats] = []
-    @Published private(set) var usbPortStats: [USBHostPortStats] = []
-
-    private func refreshPortStats() {
-        controllerStats = PortStatsMonitor.readControllers()
-        usbPortStats = PortStatsMonitor.readUSBPorts()
-    }
-
-    /// Only the counters that have actually moved.
+    /// Liquid found in a port, said once per stretch rather than once a second.
     ///
-    /// A machine where nothing has ever gone wrong produces an empty list and
-    /// the section does not appear at all — which is the point. A wall of
-    /// zeroes says nothing and would only teach people to ignore the section
-    /// on the day it finally has something in it.
-    var portFaults: [PortFaultGroup] {
-        var groups: [PortFaultGroup] = []
-        for stats in controllerStats where stats.hasFaults {
-            groups.append(PortFaultGroup(
-                id: "controller-\(stats.index)",
-                // Numbered by position in the controller's own array, because
-                // that is all the identity it gives us.
-                name: "Port controller \(stats.index + 1)",
-                entries: stats.faultCounts
-            ))
+    /// Unlike the drain warning there is no settling period: this is the
+    /// controller's own latched finding, not a measurement that can dip for a
+    /// moment under load, so there is nothing to wait out.
+    private func noteLiquid() {
+        guard warnLiquid else { return }
+        let affected = Set(ports.filter { $0.liquid?.isNoteworthy == true }.map(\.id))
+        for port in ports where port.liquid?.isNoteworthy == true {
+            guard !liquidAnnounced.contains(port.id) else { continue }
+            post(NoticeBuilder.liquidDetected(port))
         }
-        for stats in usbPortStats where stats.hasFaults {
-            groups.append(PortFaultGroup(
-                id: "usb-\(stats.id)",
-                name: stats.portNumber.map { "USB port \($0)" } ?? "USB port",
-                entries: stats.faultCounts
-            ))
-        }
-        return groups
+        // Dropping a port that has dried out re-arms it for next time.
+        liquidAnnounced = affected
     }
 
     /// A drain worth the name, and how long it has to hold for.

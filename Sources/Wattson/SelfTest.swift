@@ -29,6 +29,9 @@ enum SelfTest {
         checks += batteryChecks()
         checks += portStatsChecks()
         checks += thunderboltChecks()
+        checks += liquidChecks()
+        checks += phyChecks()
+        checks += displayChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -280,6 +283,23 @@ enum SelfTest {
         let charger = PortMonitor.identity(from: identityCaptures[2].properties)
         checks.append(Check(name: "identity: a charger with VDOs identifies itself",
                             passed: charger.identifiesItself && charger.isActive == nil))
+
+        // A PD endpoint publishes a vendor ID and never a name, so the table
+        // is the only route from a cable's chip to a manufacturer.
+        checks.append(Check(name: "identity: a known vendor ID resolves to a name",
+                            passed: cable.vendorName == "Greatland Electronics",
+                            detail: "got \(cable.vendorName ?? "nil")"))
+        checks.append(Check(name: "identity: the charger's vendor resolves too",
+                            passed: charger.vendorName == "Shenzhen Kejinming",
+                            detail: "got \(charger.vendorName ?? "nil")"))
+        // An unlisted ID still says something useful: it is what you would
+        // paste into a search.
+        let unlisted = PortMonitor.identity(from: ["Metadata": ["Vendor ID": 0x9ABC] as [String: Any]])
+        checks.append(Check(name: "identity: an unlisted vendor falls back to its ID",
+                            passed: unlisted.vendorName == "0x9ABC",
+                            detail: "got \(unlisted.vendorName ?? "nil")"))
+        checks.append(Check(name: "identity: no vendor ID means no vendor",
+                            passed: lone.vendorName == nil))
 
         // A populated node met first, then an empty one for the same address:
         // the walk visits children in whatever order IOKit hands them over,
@@ -537,6 +557,207 @@ enum SelfTest {
         ]])
         checks.append(Check(name: "thunderbolt: an unknown speed code reports nothing",
                             passed: odd[1]?.capabilityLabel == nil))
+        return checks
+    }
+
+    // MARK: - Liquid detection
+
+    /// A dry port on this Mac, verbatim.
+    private static let dryPort: [String: Any] = [
+        "FeatureTypeDescription": "LDCM",
+        "LiquidDetected": false,
+        "StateDescription": "Hardware Controlled",
+        "MitigationsEnabled": false,
+        "MitigationsStatus": 0,
+        "UserOverrideActive": false,
+    ]
+
+    private static func liquidChecks() -> [Check] {
+        var checks: [Check] = []
+        let dry = PortMonitor.liquidDetection(from: dryPort)
+        // A dry port is the case that must stay silent, and it is the only one
+        // that can be tested against real hardware without ruining a laptop.
+        checks.append(Check(name: "liquid: a dry port says nothing",
+                            passed: !dry.isNoteworthy && dry.summary == nil))
+        checks.append(Check(name: "liquid: the controller's own state is read",
+                            passed: dry.state == "Hardware Controlled"))
+
+        var wet = dryPort
+        wet["LiquidDetected"] = true
+        let detected = PortMonitor.liquidDetection(from: wet)
+        checks.append(Check(name: "liquid: a detection is noteworthy",
+                            passed: detected.isNoteworthy
+                                && detected.summary == "Liquid detected in this port"))
+
+        var held = wet
+        held["MitigationsStatus"] = 2
+        checks.append(Check(
+            name: "liquid: a detection that is cutting the port says both",
+            passed: PortMonitor.liquidDetection(from: held).summary
+                == "Liquid detected — this port is being held down"))
+
+        // Mitigation without a current detection: the port is still being held
+        // down, and saying nothing would leave a dead port unexplained.
+        var latched = dryPort
+        latched["MitigationsStatus"] = 1
+        let stillHeld = PortMonitor.liquidDetection(from: latched)
+        checks.append(Check(name: "liquid: a held-down port is explained even once dry",
+                            passed: stillHeld.isNoteworthy
+                                && stillHeld.summary == "This port is being held down by liquid mitigation"))
+
+        // A node that is not the liquid circuit must not be read as one.
+        let notLDCM = PortMonitor.liquidDetection(from: ["FeatureTypeDescription": "Power In"])
+        checks.append(Check(name: "liquid: absent keys default to a dry, quiet port",
+                            passed: !notLDCM.isNoteworthy))
+        return checks
+    }
+
+    // MARK: - Lane assignment
+
+    /// The Lenovo ThinkStation monitor capture: a display over USB-C that took
+    /// both high-speed lanes at HBR3, leaving the dock's own devices on USB 2.0.
+    /// This is the shape the whole feature exists to explain, and it only
+    /// occurs while a display is attached.
+    private static let displayPhyCapture: [String: Any] = [
+        "AppleTypeCPhyID": 1,
+        "AppleTypeCPhyLane": [
+            "Lane 0": [
+                "Transport": "DisplayPort", "Power Level": "on",
+                "Client": "AppleATCDPAltModePort(atc1-dpphy)",
+            ] as [String: Any],
+            "Lane 1": [
+                "Transport": "DisplayPort", "Power Level": "on",
+                "Client": "AppleATCDPAltModePort(atc1-dpphy)",
+            ] as [String: Any],
+        ] as [String: Any],
+        "AppleTypeCPhyDisplayPortPclk": [
+            "PCLK 1": [
+                "Clients": ["AppleATCDPAltModePort(atc1-dpphy)"],
+                "Link Rate": "8.10Gbps/lane (HBR3)",
+            ] as [String: Any],
+        ] as [String: Any],
+        "AppleTypeCPhyDisplayPortTunnel": [:] as [String: Any],
+        "AppleTypeCPhyUSB2": [
+            "Transport": "USB2", "Power Level": "on", "Client": "AppleT8132USBXHCI",
+        ] as [String: Any],
+    ]
+
+    /// The same Mac's other PHY in the same capture: nothing attached.
+    private static let idlePhyCapture: [String: Any] = [
+        "AppleTypeCPhyID": 0,
+        "AppleTypeCPhyLane": ["Lane 0": [:] as [String: Any], "Lane 1": [:] as [String: Any]] as [String: Any],
+        "AppleTypeCPhyDisplayPortPclk": [:] as [String: Any],
+        "AppleTypeCPhyUSB2": [:] as [String: Any],
+    ]
+
+    private static func phyChecks() -> [Check] {
+        var checks: [Check] = []
+        guard let display = PhyMonitor.phy(from: displayPhyCapture),
+              let idle = PhyMonitor.phy(from: idlePhyCapture)
+        else {
+            return [Check(name: "lanes: captures decoded", passed: false)]
+        }
+
+        checks.append(Check(name: "lanes: both lanes read as DisplayPort",
+                            passed: display.laneSummary == "Both lanes: DisplayPort",
+                            detail: "got \(display.laneSummary ?? "nil")"))
+        // 8.10 per lane across the two lanes actually carrying the display.
+        checks.append(Check(name: "lanes: display bandwidth is summed over its own lanes",
+                            passed: display.displaySummary == "16.2 Gbps over 2 lanes HBR3",
+                            detail: "got \(display.displaySummary ?? "nil")"))
+        checks.append(Check(name: "lanes: the rate name comes from the controller's string",
+                            passed: display.displayLinkRate == "8.10Gbps/lane (HBR3)"))
+        checks.append(Check(name: "lanes: the USB 2.0 pair is read separately",
+                            passed: display.usb2Transport == "USB2"))
+        checks.append(Check(name: "lanes: a display on both lanes is flagged",
+                            passed: display.takesAllLanesForDisplay))
+
+        // An unpowered lane is not an assignment.
+        checks.append(Check(name: "lanes: an idle port claims no lane assignment",
+                            passed: idle.laneSummary == nil && !idle.takesAllLanesForDisplay))
+        checks.append(Check(name: "lanes: an idle port claims no display",
+                            passed: idle.displaySummary == nil))
+
+        // The consequence is only stated about a port with something on it.
+        var empty = PortInfo(name: "USB-C", kind: .usbC, number: 2, isConnected: false)
+        empty.phy = display
+        checks.append(Check(name: "lanes: no lane verdict on a port with nothing plugged in",
+                            passed: !empty.displayIsUsingAllLanes))
+        var occupied = empty
+        occupied.isConnected = true
+        checks.append(Check(name: "lanes: the USB 2.0 consequence is stated when connected",
+                            passed: occupied.displayIsUsingAllLanes))
+
+        // One lane for display and one for USB3 is a real and different case.
+        var mixed = displayPhyCapture
+        mixed["AppleTypeCPhyLane"] = [
+            "Lane 0": ["Transport": "DisplayPort", "Power Level": "on"] as [String: Any],
+            "Lane 1": ["Transport": "USB3", "Power Level": "on"] as [String: Any],
+        ] as [String: Any]
+        let split = PhyMonitor.phy(from: mixed)
+        checks.append(Check(name: "lanes: a split assignment names both transports",
+                            passed: split?.laneSummary == "Both lanes: DisplayPort + USB3",
+                            detail: "got \(split?.laneSummary ?? "nil")"))
+        checks.append(Check(name: "lanes: a split assignment is not a display taking everything",
+                            passed: split?.takesAllLanesForDisplay == false))
+        checks.append(Check(name: "lanes: display bandwidth counts only the display's lane",
+                            passed: split?.displaySummary == "8.1 Gbps over 1 lane HBR3",
+                            detail: "got \(split?.displaySummary ?? "nil")"))
+        return checks
+    }
+
+    // MARK: - Displays
+
+    private static func displayChecks() -> [Check] {
+        var checks: [Check] = []
+
+        // A 4K60 panel: 3840 x 2160 x 60 x 24 bits, plus 8b/10b, is ~14.9 Gbps
+        // before a single line of blanking.
+        var uhd = DisplayInfo(id: 1)
+        uhd.pixelWidth = 3840; uhd.pixelHeight = 2160; uhd.refreshHz = 60
+        let floor = uhd.minimumGbps ?? 0
+        checks.append(Check(name: "display: 4K60's uncompressed floor is about 14.9 Gbps",
+                            passed: floor > 14.8 && floor < 15.0,
+                            detail: String(format: "got %.2f", floor)))
+
+        // Both lanes at HBR3 is 16.2 Gbps, which clears the floor — and the
+        // app must still say nothing, because the floor understates the need.
+        checks.append(Check(name: "display: nothing is claimed when a mode appears to fit",
+                            passed: !uhd.cannotFitUncompressed(in: 16.2)
+                                && uhd.compressionVerdict(linkGbps: 16.2) == nil))
+
+        // One lane at HBR3 is 8.1 Gbps. The floor alone exceeds it, so the
+        // picture provably cannot be uncompressed.
+        checks.append(Check(name: "display: a mode over the floor is proved compressed",
+                            passed: uhd.cannotFitUncompressed(in: 8.1)))
+        let verdict = uhd.compressionVerdict(linkGbps: 8.1) ?? ""
+        checks.append(Check(name: "display: the verdict states both figures",
+                            passed: verdict.contains("14.9") && verdict.contains("8.1")
+                                && verdict.contains("DSC"),
+                            detail: verdict))
+
+        // A mode with nothing in it must not produce arithmetic.
+        let blank = DisplayInfo(id: 2)
+        checks.append(Check(name: "display: an unread mode computes nothing",
+                            passed: blank.minimumGbps == nil
+                                && !blank.cannotFitUncompressed(in: 1)))
+
+        // Attribution: unambiguous or not at all.
+        var builtIn = DisplayInfo(id: 3); builtIn.isBuiltIn = true
+        var one = DisplayInfo(id: 4); one.pixelWidth = 2560; one.pixelHeight = 1440; one.refreshHz = 60
+        var two = DisplayInfo(id: 5); two.pixelWidth = 1920; two.pixelHeight = 1080; two.refreshHz = 60
+        checks.append(Check(name: "display: the built-in panel is never the external one",
+                            passed: DisplayMonitor.soleExternal(from: [builtIn]) == nil))
+        checks.append(Check(name: "display: one external display attributes",
+                            passed: DisplayMonitor.soleExternal(from: [builtIn, one])?.id == 4))
+        checks.append(Check(name: "display: two external displays attribute to neither",
+                            passed: DisplayMonitor.soleExternal(from: [builtIn, one, two]) == nil))
+
+        // The port-level verdict needs both halves; neither alone will do.
+        var port = PortInfo(name: "USB-C", kind: .usbC, number: 2, isConnected: true)
+        port.display = uhd
+        checks.append(Check(name: "display: no verdict without a known link rate",
+                            passed: port.displayCompression == nil))
         return checks
     }
 }
