@@ -168,11 +168,24 @@ enum SMCMonitor {
     /// They are intentionally not combined or converted into any UI summary;
     /// this is used by the raw diagnostic capture.
     static func diagnosticValues() -> String {
-        let keys = ["PSTR", "PDTR", "D1JV", "D1JI", "D2JV", "D2JI", "D3JV", "D3JI"]
         guard open() else { return "<AppleSMC could not be opened>" }
+        // Every key a reading in this app currently depends on. The full walk
+        // below covers these too, but a capture is easier to work from when the
+        // handful that actually drive something are listed on their own.
+        var keys = ["PSTR", "PDTR", "PPBR"]
+        for index in 1...4 {
+            keys += ["D\(index)UI", "D\(index)DE", "D\(index)JV", "D\(index)JI"]
+        }
+        keys += ["B0AV", "B0AC", "B0FC", "B0DC", "B0CT", "B0TE", "B0TF"]
         return keys.map { key in
-            guard let value = value(forKey: key) else { return "\(key)=<not available>" }
-            return "\(key)=\(value)"
+            guard let (info, bytes) = rawBytes(forKey: key) else {
+                return "\(key)=<not available>"
+            }
+            let type = typeCode(info.dataType)
+            let decoded = decode(bytes: bytes, type: type, key: key) ?? "—"
+            let hex = bytes.map { String(format: "%02X", $0) }.joined()
+            return String(format: "%@  type=%-4@ value=%@  raw=%@",
+                          key, type.trimmingCharacters(in: .whitespaces) as NSString, decoded, hex)
         }
         .joined(separator: "\n")
     }

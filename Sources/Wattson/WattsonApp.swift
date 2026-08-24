@@ -41,6 +41,29 @@ enum Entry {
             dumpFaults(ports)
             exit(0)
         }
+        // `Wattson --capture "label"` writes the raw hardware capture without
+        // opening the app. The GUI route is behind a debug setting and three
+        // clicks, which is the wrong shape for the moment a dock is plugged in
+        // and the interesting state is sitting there waiting to be recorded.
+        if let index = arguments.firstIndex(of: "--capture") {
+            let label = index + 1 < arguments.count ? arguments[index + 1] : "cli"
+            let target = DiagnosticTarget(
+                id: "cli", kind: .cable, title: "Whole machine (captured from the CLI)",
+                subtitle: "No item selected; every source below is machine-wide anyway"
+            )
+            let text = DiagnosticReport.capture(label: label, target: target)
+            let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(DiagnosticReport.fileName(for: label))
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                print(url.path)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("could not write the capture: \(error.localizedDescription)\n".utf8))
+                exit(1)
+            }
+            exit(0)
+        }
         // `Wattson --throttle` prints thermal pressure and what the cores are
         // actually running at, once a second.
         if arguments.contains("--throttle") {

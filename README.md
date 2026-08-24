@@ -254,6 +254,25 @@ The binary lives inside the bundle:
 | `--json` | The same reading as JSON, for anything that has to read it rather than look at it. |
 | `--watch` | Prints the input / load / battery line once a second until interrupted. |
 | `--selftest` | Replays recorded hardware captures through the readers and reports what broke. Touches no hardware. |
+| `--capture "name"` | Writes a raw hardware capture to the working directory and prints its path. |
+
+`--capture` is the one to reach for when something unfamiliar is plugged in and
+you have thirty seconds. It records the unparsed sources — the whole IOKit
+service plane, every SMC key the controller admits to, the USB BOS descriptors
+that no `ioreg` invocation can produce, every display mode CoreGraphics offers
+— and none of Wattson's own conclusions about them. That is the point: it is
+the evidence, so a reading can be worked out afterwards from a capture instead
+of from the hardware.
+
+Several sections are empty unless something is attached, and say so where they
+are. A cable's e-marker only answers when there is something at the far end; a
+port's DisplayPort and USB3 transport nodes exist only while those transports
+are up; an idle port's lanes are parked. A capture taken with the dock running
+is worth a dozen taken idle.
+
+> [!WARNING]
+> A capture carries serial numbers — the Mac's, the battery's, and every
+> attached device's. Read it before sending it to anyone.
 
 ---
 

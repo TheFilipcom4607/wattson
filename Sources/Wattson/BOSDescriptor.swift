@@ -283,6 +283,61 @@ enum BOSDescriptor {
         return parsed
     }
 
+    /// Every attached USB device's BOS descriptor as raw bytes, for the
+    /// diagnostic capture.
+    ///
+    /// This exists because `ioreg` cannot produce it. The BOS arrives over a
+    /// control transfer, not through the registry, so a capture without this
+    /// section carries no evidence about alternate modes or declared link
+    /// speeds at all — the two things that need a real dock to observe and are
+    /// therefore the two most likely to be worked on from a capture rather
+    /// than from the hardware.
+    ///
+    /// Bytes only, deliberately. The capture's job is the unparsed source; a
+    /// capability breakdown here would be Wattson's reading of it, which is the
+    /// thing the whole feature exists to keep out.
+    ///
+    /// Reads fresh rather than through the cache, and does not populate it: a
+    /// capture is a moment, and it should not leave the app's state different
+    /// from how it found it.
+    static func allDescriptors() -> String {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(
+            kIOMainPortDefault, IOServiceMatching("IOUSBHostDevice"), &iterator
+        ) == KERN_SUCCESS else { return "<could not enumerate USB devices>" }
+        defer { IOObjectRelease(iterator) }
+
+        var lines: [String] = []
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            var unmanaged: Unmanaged<CFMutableDictionary>?
+            let properties = IORegistryEntryCreateCFProperties(
+                service, &unmanaged, kCFAllocatorDefault, 0
+            ) == KERN_SUCCESS ? unmanaged?.takeRetainedValue() as? [String: Any] : nil
+
+            let name = (properties?["USB Product Name"] as? String) ?? "<unnamed>"
+            let vendor = (properties?["idVendor"] as? NSNumber)?.intValue ?? 0
+            let product = (properties?["idProduct"] as? NSNumber)?.intValue ?? 0
+            let location = (properties?["locationID"] as? NSNumber)?.intValue ?? 0
+            let bcd = (properties?["bcdUSB"] as? NSNumber)?.intValue ?? 0
+            let speed = (properties?["UsbLinkSpeed"] as? NSNumber)?.doubleValue ?? 0
+            lines.append(String(
+                format: "%@  VID/PID %04X:%04X  locationID 0x%08X  bcdUSB 0x%04X  UsbLinkSpeed %.0f",
+                name, vendor, product, location, bcd, speed))
+
+            guard let bos = fetch(service) else {
+                // Both are ordinary. A USB 2.0 device predating the BOS
+                // descriptor has none to give, and a device a driver is holding
+                // exclusively can refuse the request.
+                lines.append("   <no BOS descriptor returned — the device has none, or refused the read>")
+                continue
+            }
+            lines.append("   \(bos.count) bytes: "
+                + bos.map { String(format: "%02x", $0) }.joined(separator: " "))
+        }
+        return lines.isEmpty ? "<no USB devices attached>" : lines.joined(separator: "\n")
+    }
+
     /// Drops anything no longer plugged in, so the cache tracks the machine
     /// rather than growing for the lifetime of the process.
     static func forget(except locations: Set<Int>) {

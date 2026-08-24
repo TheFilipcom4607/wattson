@@ -31,6 +31,18 @@ enum DiagnosticReport {
                    command: "/usr/sbin/ioreg",
                    arguments: ["-l", "-w", "0", "-r", "-c", "IOUSBHostDevice"], into: &report)
 
+        // The one thing ioreg cannot produce. A BOS descriptor arrives over a
+        // control transfer, so without this a capture carries no evidence about
+        // alternate modes or declared link speeds — which are exactly the
+        // readings that need a dock present to observe, and so exactly the ones
+        // most likely to be worked on from a capture rather than the hardware.
+        report.append("\n=== USB BOS DESCRIPTORS — raw bytes (BOSDescriptor source) ===")
+        report.append("Fetched with GET_DESCRIPTOR(BOS) over IOUSBDeviceInterface, without opening "
+            + "any device. Carries the Billboard capability (why an alternate mode failed) and the "
+            + "SuperSpeed / SuperSpeedPlus capabilities (what speed the device says it can do, "
+            + "which bcdUSB does not tell you). Not present in any ioreg output.")
+        report.append(BOSDescriptor.allDescriptors())
+
         // A complete service-plane dump preserves every child property that
         // Scanner and PortMonitor can walk to, including classes Apple changes
         // between macOS releases. The class-specific sections below remain so a
@@ -43,6 +55,17 @@ enum DiagnosticReport {
         rawSection("SYSTEM_PROFILER JSON — SPThunderboltDataType (Scanner source)",
                    command: "/usr/sbin/system_profiler",
                    arguments: ["-json", "SPThunderboltDataType"], into: &report)
+
+        // The Thunderbolt device tree as IOKit sees it, which is the route the
+        // app deliberately does not use yet. Every switch on an idle Mac is a
+        // host router at Depth 0; a switch at Depth 1 or more is an attached
+        // device, and no capture has ever contained one.
+        rawSection("IOREG — IOThunderboltSwitch (device tree; Depth > 0 means something is attached)",
+                   command: "/usr/sbin/ioreg",
+                   arguments: ["-l", "-w", "0", "-r", "-c", "IOThunderboltSwitch"], into: &report)
+        rawSection("IOREG — IOThunderboltPort (ThunderboltMonitor source)",
+                   command: "/usr/sbin/ioreg",
+                   arguments: ["-l", "-w", "0", "-r", "-c", "IOThunderboltPort"], into: &report)
 
         // PortMonitor: the full controller trees include Power Delivery children,
         // active transports, pin configuration, and e-marker nodes.
@@ -59,6 +82,24 @@ enum DiagnosticReport {
                    it, so the node appears when the cable is e-marked AND something is attached \
                    at the far end. A capture of an e-marked cable lying idle in a port is empty \
                    here — attach a charger or device to the other end and capture again.
+                   """)
+
+        rawSection("IOREG — IOPortTransportState (per-transport state, all subclasses)",
+                   command: "/usr/sbin/ioreg",
+                   arguments: ["-l", "-w", "0", "-r", "-c", "IOPortTransportState"], into: &report,
+                   emptyNote: """
+                   Only the CC node exists on an idle machine. The DisplayPort, USB3 and CIO \
+                   nodes are created when that transport actually comes up, so a capture taken \
+                   with nothing attached shows one node per port and no more. Capture again with \
+                   the dock and the monitors running to get the rest.
+                   """)
+        rawSection("IOREG — AppleTypeCPhy (PhyMonitor source: lane assignment and DP link rate)",
+                   command: "/usr/sbin/ioreg",
+                   arguments: ["-l", "-w", "0", "-r", "-c", "AppleTypeCPhy"], into: &report,
+                   emptyNote: """
+                   An idle port's lanes are parked and the controller keeps reporting the last \
+                   assignment it made, so these readings only mean anything while something is \
+                   plugged in.
                    """)
 
         // PowerMonitor's unprocessed property dictionary, including adapter and
@@ -81,6 +122,22 @@ enum DiagnosticReport {
         // AppleSmartBattery, and the two do not always carry the same fields.
         report.append("\n=== IOPS — IOPSCopyExternalPowerAdapterDetails (PowerMonitor cross-check) ===")
         report.append(externalPowerAdapterDetails())
+
+        // DisplayMonitor is the app's only non-IOKit reader, so nothing above
+        // carries the display half of a USB-C link.
+        report.append("\n=== CORE GRAPHICS DISPLAYS — every mode offered (DisplayMonitor source) ===")
+        report.append("The full mode list matters more than the current one: \"which mode is it "
+            + "running\" is a single number, and \"which modes did the display offer, and did macOS "
+            + "take the top one\" is the question a monitor on a dock actually raises. It cannot be "
+            + "reconstructed later.")
+        report.append(DisplayMonitor.diagnosticValues())
+
+        // A different path to the same displays. The two do not always agree,
+        // and where they do not that is itself the finding — the same reason
+        // the IOPS adapter details sit beside AppleSmartBattery above.
+        rawSection("SYSTEM_PROFILER JSON — SPDisplaysDataType (cross-check on the displays above)",
+                   command: "/usr/sbin/system_profiler",
+                   arguments: ["-json", "SPDisplaysDataType"], into: &report)
 
         rawSection("SYSCTL — hw.model (MacModel source)",
                    command: "/usr/sbin/sysctl", arguments: ["hw.model"], into: &report)

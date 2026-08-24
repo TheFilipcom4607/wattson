@@ -90,6 +90,64 @@ enum DisplayMonitor {
         }
     }
 
+    /// Every value CoreGraphics publishes about every attached display, plus
+    /// every mode each one offers, for the diagnostic capture.
+    ///
+    /// Not in `ioreg` and not reachable any other way: this reader is the one
+    /// place in the app that does not go through IOKit, so a capture without
+    /// this section says nothing about the display half of a USB-C link.
+    ///
+    /// The full mode list matters more than the current mode. "Which mode is
+    /// it running" is one number; "which modes did the display offer, and did
+    /// macOS pick the top one" is the question somebody actually has about a
+    /// monitor on a dock, and it cannot be reconstructed after the fact.
+    static func diagnosticValues() -> String {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            return "<CGGetActiveDisplayList reported no active displays>"
+        }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else {
+            return "<CGGetActiveDisplayList failed on the second call>"
+        }
+
+        return ids.prefix(Int(count)).map { id -> String in
+            var lines = [
+                "display id \(id)",
+                "   CGDisplayIsBuiltin        = \(CGDisplayIsBuiltin(id) != 0)",
+                "   CGDisplayVendorNumber     = \(CGDisplayVendorNumber(id))",
+                "   CGDisplayModelNumber      = \(CGDisplayModelNumber(id))",
+                "   CGDisplaySerialNumber     = \(CGDisplaySerialNumber(id))",
+                "   CGDisplayUnitNumber       = \(CGDisplayUnitNumber(id))",
+                "   CGDisplayPixelsWide/High  = \(CGDisplayPixelsWide(id)) x \(CGDisplayPixelsHigh(id))",
+            ]
+            if let mode = CGDisplayCopyDisplayMode(id) {
+                lines.append("   current mode: pixelWidth=\(mode.pixelWidth) "
+                    + "pixelHeight=\(mode.pixelHeight) width=\(mode.width) height=\(mode.height) "
+                    + "refreshRate=\(mode.refreshRate) ioFlags=\(mode.ioFlags) "
+                    + "ioDisplayModeID=\(mode.ioDisplayModeID)")
+            } else {
+                lines.append("   current mode: <CGDisplayCopyDisplayMode returned nothing>")
+            }
+            // Ask for the HiDPI modes too; without the option the list omits
+            // exactly the ones a Retina-scaled monitor is actually using.
+            let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+            if let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] {
+                lines.append("   \(modes.count) modes offered:")
+                for mode in modes {
+                    lines.append(String(
+                        format: "      %5d x %-5d (points %5d x %-5d) @ %6.2f Hz  ioFlags=0x%08X  modeID=%d",
+                        mode.pixelWidth, mode.pixelHeight, mode.width, mode.height,
+                        mode.refreshRate, mode.ioFlags, mode.ioDisplayModeID))
+                }
+            } else {
+                lines.append("   <CGDisplayCopyAllDisplayModes returned nothing>")
+            }
+            return lines.joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
+    }
+
     static var external: [DisplayInfo] { read().filter { !$0.isBuiltIn } }
 
     /// The one external display, when there is exactly one.
