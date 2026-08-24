@@ -60,10 +60,18 @@ struct ThunderboltLink: Identifiable, Hashable {
     /// attached at all, so "10 Gbps on one lane" is what an *empty* port looks
     /// like. Reporting that as an achieved link would invent a connection.
     var achievedLabel: String? {
+        guard let gbps = achievedGbps, let lanes = currentWidth else { return nil }
+        return String(format: "%.0f Gbps (%d lane%@)", gbps, lanes, lanes == 1 ? "" : "s")
+    }
+
+    /// The same figure as a number, for anything that has to compare it rather
+    /// than print it. Carries the same caveat: the caller needs its own
+    /// evidence that Thunderbolt is running before this means anything.
+    var achievedGbps: Double? {
         guard let code = currentSpeedCode, let perLane = Self.gbps(forCode: code),
               let lanes = currentWidth, lanes > 0
         else { return nil }
-        return String(format: "%.0f Gbps (%d lane%@)", perLane * Double(lanes), lanes, lanes == 1 ? "" : "s")
+        return perLane * Double(lanes)
     }
 }
 

@@ -159,6 +159,9 @@ enum JSONOutput {
             "ccActive": port.ccActive,
             "sourceDescription": port.sourceDescription,
             "connectionCount": port.connectionCount,
+            // Facts about what the cable's chip says, never a rating. Absent
+            // when the chip published nothing.
+            "cableNotes": port.cableNotes.isEmpty ? nil : port.cableNotes,
             "outputWatts": port.outputWatts,
             "outputVolts": port.outputVolts,
             "outputAmps": port.outputAmps,
@@ -239,6 +242,7 @@ enum JSONOutput {
             "maxVolts": identity.maxVolts,
             "maxWatts": identity.maxWatts,
             "certificationXID": identity.certificationXID.map { Int($0) },
+            "speedGbps": identity.usbGbps,
             // Omitted rather than false when the responder never said.
             "active": identity.isActive,
         ])

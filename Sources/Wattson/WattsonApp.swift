@@ -170,6 +170,9 @@ enum Entry {
                 if let maker = port.emarker?.vendorName {
                     print("   Cable made by: \(maker)")
                 }
+                for note in port.cableNotes {
+                    print("   Cable note:  \(note)")
+                }
             }
             if let supported = TransportName.best(port.transportsSupported) {
                 print("   Port max:   \(supported)")

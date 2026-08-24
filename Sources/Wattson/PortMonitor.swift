@@ -55,16 +55,23 @@ struct CableEMarker: Hashable {
     /// Encoding 011 is the one that moved: it meant 20 Gbps under PD 3.0 and
     /// means 40 Gbps from PD 3.1 on, so the responder's own spec revision
     /// decides which of the two a cable is claiming.
-    var usbSpeed: String? {
+    var usbSpeed: String? { speedClaim?.label }
+
+    /// The same claim as a number, for anything comparing it against a link
+    /// that actually came up rather than printing it.
+    var usbGbps: Double? { speedClaim?.gbps }
+
+    /// One switch behind both, so the label and the figure cannot drift apart.
+    private var speedClaim: (label: String, gbps: Double)? {
         guard let vdo = cableVDO else { return nil }
         switch vdo & 0b111 {
-        case 0b000: return "USB 2.0 — 480 Mbps"
-        case 0b001: return "USB 3.2 Gen 1 — 5 Gbps"
-        case 0b010: return "USB 3.2 Gen 2 — 10 Gbps"
+        case 0b000: return ("USB 2.0 — 480 Mbps", 0.48)
+        case 0b001: return ("USB 3.2 Gen 1 — 5 Gbps", 5)
+        case 0b010: return ("USB 3.2 Gen 2 — 10 Gbps", 10)
         case 0b011: return (specificationRevision ?? 0) >= 3
-            ? "USB4 Gen 3 — 40 Gbps"
-            : "USB4 Gen 2×2 — 20 Gbps"
-        case 0b100: return "USB4 Gen 4 — 80 Gbps"
+            ? ("USB4 Gen 3 — 40 Gbps", 40)
+            : ("USB4 Gen 2×2 — 20 Gbps", 20)
+        case 0b100: return ("USB4 Gen 4 — 80 Gbps", 80)
         default: return nil
         }
     }
@@ -121,6 +128,15 @@ struct CableEMarker: Hashable {
         guard vdos.count > 1, vdos[1] != 0 else { return nil }
         return vdos[1]
     }
+
+    /// The chip answered, and published no vendor ID.
+    ///
+    /// Informational and nothing more. A zeroed e-marker is common on budget
+    /// cables and does not mean the cable is bad: the short INIU C-to-C in
+    /// `probes/` reports a vendor ID of zero and charges an iPhone at 100 W.
+    /// Distinguished from a chip that published nothing at all, which is a
+    /// different situation and gets no note.
+    var hasZeroedVendorID: Bool { !vdos.isEmpty && vendorID == 0 }
 
     /// Nil when the responder never said which it is. Distinguishing that
     /// from "passive" matters: a node whose `Metadata` is empty published no
@@ -321,6 +337,60 @@ struct PortInfo: Identifiable, Hashable {
     var thunderboltAchieved: String? {
         guard transportsActive.contains("CIO") else { return nil }
         return thunderbolt?.achievedLabel
+    }
+
+    /// What the cable's chip claims, and anything the port can say about it
+    /// that the chip cannot contradict.
+    ///
+    /// Every entry is a fact rather than a verdict, and there is deliberately
+    /// no overall rating. whatcable built a static-flag trust score first, ran
+    /// it against a real cable corpus, and found the flags firing on genuine
+    /// hardware — Apple's own cables among them — so they demoted every one of
+    /// them to a note. The two cables in `probes/` say the same thing from a
+    /// much smaller sample: one publishes a zeroed vendor ID and works fine.
+    ///
+    /// The reserved-bit tells whatcable also carries are deliberately not here.
+    /// Two cables is not a corpus, both of them have clean reserved bits, and a
+    /// flag that has never been tested against a cable that would trip it is a
+    /// flag that has only ever been tested against false negatives.
+    var cableNotes: [String] {
+        Self.cableNotes(
+            emarker: emarker,
+            negotiatedWatts: negotiated?.watts,
+            achievedGbps: transportsActive.contains("CIO") ? thunderbolt?.achievedGbps : nil
+        )
+    }
+
+    /// Split from the port so captures replay through it.
+    static func cableNotes(
+        emarker: CableEMarker?, negotiatedWatts: Double?, achievedGbps: Double?
+    ) -> [String] {
+        guard let emarker, !emarker.contentsWithheld else { return [] }
+        var notes: [String] = []
+
+        // A fact about the ID, never a verdict on the cable. Certification is
+        // voluntary, most cables skip it, and the absence of an XID says
+        // nothing whatsoever about whether a cable is any good.
+        if let xid = emarker.certificationXID {
+            notes.append(String(format: "Carries a USB-IF certification ID (XID 0x%04X)", xid))
+        }
+        if emarker.hasZeroedVendorID {
+            notes.append("The chip answered but published no vendor ID — common on budget cables")
+        }
+        // Being run above its own declared rating. One-way: over the rating is
+        // proof, at or under it proves nothing.
+        if let watts = negotiatedWatts, let rating = emarker.maxWatts, watts > rating * 1.05 {
+            notes.append(String(
+                format: "Carrying %.0f W over a cable its own chip rates at %.0f W", watts, rating))
+        }
+        // Two readings disagreeing. Both are stated rather than one being
+        // picked: an active cable under-declaring itself is a known shape, and
+        // so is a chip claiming more than the cable can do.
+        if let achieved = achievedGbps, let claimed = emarker.usbGbps, achieved > claimed * 1.05 {
+            notes.append(String(
+                format: "The link came up at %.0f Gbps; the chip claims %.0f Gbps", achieved, claimed))
+        }
+        return notes
     }
 
     /// >3 A is only legal over a cable whose e-marker declares 5 A.

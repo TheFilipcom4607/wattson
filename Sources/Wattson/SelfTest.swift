@@ -36,6 +36,7 @@ enum SelfTest {
         checks += connectionStateChecks()
         checks += billboardChecks()
         checks += linkBottleneckChecks()
+        checks += cableNoteChecks()
         checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
@@ -377,6 +378,91 @@ enum SelfTest {
         checks.append(Check(name: "link: a port with no USB 3 answers for itself",
                             passed: LinkBottleneck.verdict(
                                 for: fallen, port: slowPort, behind: nil)?.cause == .portHasNoUSB3))
+        return checks
+    }
+
+    // MARK: - What the cable's chip claims
+
+    /// The two real cables in `probes/`, as the same VDO bytes the identity
+    /// fixtures above already check against their captures.
+    ///
+    /// Two cables is a very small corpus, and it is why there are no
+    /// reserved-bit tells here. What it is big enough for is the point these
+    /// notes exist to make: the INIU cable publishes a vendor ID of zero and
+    /// charges an iPhone at 100 W, so a zeroed chip cannot be a verdict about
+    /// anything. whatcable reached the same conclusion from a corpus large
+    /// enough to catch Apple's own cables tripping their static flags.
+    private static func corpusCable(_ vdos: [[UInt8]], revision: Int = 3) -> CableEMarker {
+        var emarker = CableEMarker()
+        emarker.specificationRevision = revision
+        emarker.productType = 3
+        emarker.vendorID = Int(UInt32(vdos[0][0]) | UInt32(vdos[0][1]) << 8)
+        emarker.vdos = vdos.map { UInt32($0[0]) | UInt32($0[1]) << 8 | UInt32($0[2]) << 16 | UInt32($0[3]) << 24 }
+        return emarker
+    }
+
+    private static func cableNoteChecks() -> [Check] {
+        var checks: [Check] = []
+        // 240 W 20 Gbps C-to-C: vendor 1709, and a real certification ID.
+        let certified = corpusCable([[0xad, 0x06, 0x60, 0x1c], [0xf3, 0x29, 0x00, 0x00],
+                                     [0x00, 0x00, 0x00, 0x00], [0x42, 0x46, 0x08, 0x00]])
+        // Short INIU C-to-C: vendor zero, no certification ID, 100 W, USB 2.0.
+        let zeroed = corpusCable([[0x00, 0x00, 0x60, 0x18], [0x00, 0x00, 0x00, 0x00],
+                                  [0x00, 0x00, 0x00, 0x00], [0x40, 0x40, 0x08, 0x00]])
+
+        // The figure and the label come from one switch, so this is really a
+        // check that they cannot drift: the labels are already pinned against
+        // the captures by the identity checks above.
+        checks.append(Check(name: "cable: the speed figure agrees with the speed label",
+                            passed: certified.usbGbps == 10 && zeroed.usbGbps == 0.48,
+                            detail: "got \(show(certified.usbGbps)) and \(show(zeroed.usbGbps))"))
+
+        let certifiedNotes = PortInfo.cableNotes(
+            emarker: certified, negotiatedWatts: nil, achievedGbps: nil)
+        checks.append(Check(name: "cable: a certification ID is reported as an ID",
+                            passed: certifiedNotes.count == 1
+                                && certifiedNotes[0].contains("0x29F3"),
+                            detail: "got \(certifiedNotes.joined(separator: " | "))"))
+
+        let zeroedNotes = PortInfo.cableNotes(emarker: zeroed, negotiatedWatts: nil, achievedGbps: nil)
+        checks.append(Check(name: "cable: a zeroed vendor ID is a note, not a verdict",
+                            passed: zeroedNotes.count == 1
+                                && zeroedNotes[0].contains("no vendor ID")
+                                && !zeroedNotes[0].lowercased().contains("fake"),
+                            detail: "got \(zeroedNotes.joined(separator: " | "))"))
+        checks.append(Check(name: "cable: an uncertified cable is not accused of anything",
+                            passed: !zeroedNotes.contains { $0.contains("XID") }))
+
+        // Rated 100 W by its own chip. One-way: above the rating is proof,
+        // at or under it is the ordinary case and says nothing.
+        checks.append(Check(
+            name: "cable: being run above its own rating is stated",
+            passed: PortInfo.cableNotes(emarker: zeroed, negotiatedWatts: 140, achievedGbps: nil)
+                .contains { $0.contains("140 W") && $0.contains("100 W") }))
+        checks.append(Check(
+            name: "cable: being run at its rating is not worth a word",
+            passed: !PortInfo.cableNotes(emarker: zeroed, negotiatedWatts: 100, achievedGbps: nil)
+                .contains { $0.contains("rates at") }))
+
+        // The chip claims 10 Gbps and the controller measured 40. Both are
+        // stated; neither is silently preferred.
+        let contradiction = PortInfo.cableNotes(
+            emarker: certified, negotiatedWatts: nil, achievedGbps: 40)
+        checks.append(Check(name: "cable: a link faster than the chip claims states both figures",
+                            passed: contradiction.contains { $0.contains("40 Gbps") && $0.contains("10 Gbps") },
+                            detail: "got \(contradiction.joined(separator: " | "))"))
+        checks.append(Check(
+            name: "cable: a link matching the chip is not a contradiction",
+            passed: !PortInfo.cableNotes(emarker: certified, negotiatedWatts: nil, achievedGbps: 10)
+                .contains { $0.contains("came up at") }))
+
+        // A chip that answered with nothing has made no claims to check.
+        var withheld = CableEMarker()
+        withheld.productType = 3
+        withheld.vendorID = 0
+        checks.append(Check(name: "cable: a chip that published nothing gets no notes",
+                            passed: PortInfo.cableNotes(
+                                emarker: withheld, negotiatedWatts: 140, achievedGbps: 40).isEmpty))
         return checks
     }
 
