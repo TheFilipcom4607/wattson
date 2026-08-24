@@ -143,10 +143,13 @@ Control Center › Battery.
   the cable is wired, and what it is certified to carry.
 - **Cable diagnostics** — whether a cable has SuperSpeed lanes and sideband pins at
   all, which is usually the answer to "why is this drive slow".
-- **Whether the cable has an e-marker at all**, which is what separates a 3 A cable
-  from one that may carry 5 A. Most Macs report that the chip is there and never
-  what it says, so its rating is not something the panel can state — what it shows
-  instead is what the hardware actually negotiated through the cable.
+- **What the cable's own chip says it can carry** — its speed, its current and
+  voltage ratings, and who made it. This is read from the cable's e-marker over
+  SOP', which is what separates a 3 A cable from one rated for 5 A. A cable
+  idling with nothing on its far end is never interrogated and gets no rating;
+  neither does one whose chip answers with nothing. In those cases the panel
+  falls back to what the hardware actually negotiated through the cable, and
+  says which of the two you are looking at rather than blurring them together.
 
 ### Devices
 
@@ -223,7 +226,9 @@ The binary lives inside the bundle:
 | Flag | |
 | :--- | :--- |
 | `--dump` | Prints one reading — power, ports, devices — as plain text, and exits. |
+| `--json` | The same reading as JSON, for anything that has to read it rather than look at it. |
 | `--watch` | Prints the input / load / battery line once a second until interrupted. |
+| `--selftest` | Replays recorded hardware captures through the readers and reports what broke. Touches no hardware. |
 
 ---
 
@@ -241,6 +246,14 @@ macOS publishes a great deal about the adapter attached to a Mac and nothing at
 all about what the Mac itself will accept, so that number is a table of Apple's
 published ratings keyed on the model identifier. A model missing from the table
 reports nothing rather than a guess.
+
+**The battery's condition** comes from the pack's own gauge: capacity against
+design, cycles against the rating for the chemistry, and the temperature it is
+sitting at. Capacity is shown clamped to 100% because a pack fresh from the
+factory genuinely holds a little more than its design figure — that number is a
+floor the cells are built to clear, not an average — and `--json` reports it
+unclamped. "Service recommended" appears only when the gauge has latched a real
+fault; wear is not a fault, and a pack at 79% is working as designed.
 
 **History keys on the serial number**, so it survives the device being moved to
 another port. Plenty of hubs and card readers report no serial at all; theirs keys

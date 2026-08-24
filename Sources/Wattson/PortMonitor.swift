@@ -12,46 +12,68 @@ struct PowerOption: Identifiable, Hashable {
     var watts: Double { milliwatts / 1000 }
 }
 
-/// What the cable's own e-marker chip reports over SOP'.
+/// What a USB-PD endpoint reports in its Discover Identity response.
 ///
 /// The chip is interrogated during PD negotiation — a cable with a free end is
 /// never asked, so this is nil until something at the far end gives the Mac a
 /// reason to talk to it.
 ///
-/// How much arrives depends on the Mac. Machines with an `AppleTCController`
-/// publish the raw Discover Identity VDOs, which decode to the cable's speed,
-/// current and voltage ratings. `AppleHPM` machines publish only the node's
-/// existence — which still proves there *is* an e-marker, and that is worth
-/// knowing on its own.
+/// This was long believed to be unreadable on `AppleHPM` machines. It is not:
+/// the VDOs are published under the node's `Metadata` sub-dictionary, not at
+/// the top level where every other property on the node lives, and they are
+/// stored little-endian. Reading the wrong key returned nothing on every Mac,
+/// which read exactly like the platform withholding the contents. Captures in
+/// `probes/` carry populated VDOs going back to the first ones ever taken.
+///
+/// Where the node genuinely carries nothing — an empty `Metadata` is common
+/// for a cable idling with nothing on its far end — `contentsWithheld` stays
+/// true and nothing is claimed.
 struct CableEMarker: Hashable {
+    /// PD revision of the responder: 1 = PD 2.0, 2 = PD 3.0, 3 = PD 3.1 or later.
     var specificationRevision: Int?
     var vendorID: Int?
     var productID: Int?
     /// 3 = passive cable, 4 = active cable, 6 = VCONN-powered device.
     var productType: Int?
-    /// Raw Discover Identity VDOs, empty where the platform withholds them.
+    /// The platform's own words for `productType`, when it supplies them.
+    var productTypeDescription: String?
+    /// Raw Discover Identity VDOs, empty where the node carries none.
     var vdos: [UInt32] = []
 
-    /// The Cable VDO is the last one in the Discover Identity response.
+    /// The Cable VDO is VDO[3] of the Discover Identity response — a fixed
+    /// index, not the last element. Active cables answer with five or six
+    /// VDOs, so reading the last one decoded Active Cable VDO 2 as if it were
+    /// the Cable VDO and reported a 40 Gbps cable's ratings from the wrong
+    /// bits entirely.
     private var cableVDO: UInt32? {
-        guard let last = vdos.last, productType == 3 || productType == 4 else { return nil }
-        return last
+        guard vdos.count > 3, productType == 3 || productType == 4 else { return nil }
+        return vdos[3]
     }
 
-    /// Bits 2:0 of the Cable VDO.
+    /// Bits 2:0 of the Cable VDO, per Table 6.42 (passive) / 6.43 (active).
+    ///
+    /// Encoding 011 is the one that moved: it meant 20 Gbps under PD 3.0 and
+    /// means 40 Gbps from PD 3.1 on, so the responder's own spec revision
+    /// decides which of the two a cable is claiming.
     var usbSpeed: String? {
         guard let vdo = cableVDO else { return nil }
         switch vdo & 0b111 {
         case 0b000: return "USB 2.0 — 480 Mbps"
         case 0b001: return "USB 3.2 Gen 1 — 5 Gbps"
         case 0b010: return "USB 3.2 Gen 2 — 10 Gbps"
-        case 0b011: return "USB4 Gen 2×2 — 20 Gbps"
-        case 0b100, 0b101: return "USB4 Gen 3 — 40 Gbps"
+        case 0b011: return (specificationRevision ?? 0) >= 3
+            ? "USB4 Gen 3 — 40 Gbps"
+            : "USB4 Gen 2×2 — 20 Gbps"
+        case 0b100: return "USB4 Gen 4 — 80 Gbps"
         default: return nil
         }
     }
 
-    /// Bits 6:5. Only 3 A and 5 A are defined; anything else is "unstated".
+    /// Bits 6:5. Only 3 A and 5 A are defined; anything else is unstated.
+    ///
+    /// 00 is left unstated deliberately. The spec calls it invalid, but plain
+    /// USB 2.0 charging cables emit it routinely as a "default", and there is
+    /// nothing here to distinguish that from a cable lying about itself.
     var maxAmps: Double? {
         guard let vdo = cableVDO else { return nil }
         switch (vdo >> 5) & 0b11 {
@@ -61,10 +83,10 @@ struct CableEMarker: Hashable {
         }
     }
 
-    /// Bits 9:8. Above 20 V is Extended Power Range.
+    /// Bits 10:9. Above 20 V is Extended Power Range.
     var maxVolts: Double? {
         guard let vdo = cableVDO else { return nil }
-        switch (vdo >> 8) & 0b11 {
+        switch (vdo >> 9) & 0b11 {
         case 0b00: return 20
         case 0b01: return 30
         case 0b10: return 40
@@ -72,14 +94,44 @@ struct CableEMarker: Hashable {
         }
     }
 
+    /// The rating printed on the cable.
+    ///
+    /// The top voltage bucket is stated as 50 V but EPR itself stops at 48 V,
+    /// so multiplying the bucket out gives 250 W for a cable whose jacket says
+    /// 240 W. Use the range's real ceiling and the arithmetic matches the
+    /// product.
     var maxWatts: Double? {
         guard let amps = maxAmps, let volts = maxVolts else { return nil }
-        return amps * volts
+        return amps * min(volts, 48)
     }
 
-    var isActive: Bool { productType == 4 }
+    /// The USB-IF XID from the Cert Stat VDO, which is VDO[1]. Zero means the
+    /// cable never went through certification — common, and not a fault.
+    var certificationXID: UInt32? {
+        guard vdos.count > 1, vdos[1] != 0 else { return nil }
+        return vdos[1]
+    }
 
-    /// True when the chip was found but the Mac declined to publish what it said.
+    /// Nil when the responder never said which it is. Distinguishing that
+    /// from "passive" matters: a node whose `Metadata` is empty published no
+    /// product type at all, and reporting that as passive states something
+    /// the hardware did not.
+    var isActive: Bool? {
+        guard let productType else { return nil }
+        return productType == 4
+    }
+
+    /// Whether the responder said anything that identifies it.
+    ///
+    /// A spec revision alone does not count. Every one of these nodes carries
+    /// one whether or not the endpoint answered, so treating it as identity
+    /// would mean reporting a device on the far end of every cable, including
+    /// the ones with nothing on the far end.
+    var identifiesItself: Bool {
+        vendorID != nil || productID != nil || productType != nil || !vdos.isEmpty
+    }
+
+    /// True when the node was found but carries nothing to decode.
     var contentsWithheld: Bool { vdos.isEmpty }
 }
 
@@ -127,6 +179,11 @@ struct PortInfo: Identifiable, Hashable {
     var hasPDContract: Bool { powerSourceKind == "USB-PD" }
     /// The cable's own chip, when the hardware has had reason to interrogate it.
     var emarker: CableEMarker?
+    /// The far end's own account of itself, read at the SOP address — a
+    /// charger, a dock, a phone. The same Discover Identity structure, so the
+    /// cable-only readings on it guard themselves: they require a product type
+    /// of passive or active cable, which nothing answering here reports.
+    var partner: CableEMarker?
     /// How many times anything has ever been plugged into this port. Counted by
     /// the port controller, so unlike Wattson's own log it survives reboots and
     /// covers the whole life of the machine.
@@ -183,9 +240,13 @@ struct PortInfo: Identifiable, Hashable {
     var cableWiringSummary: String {
         var parts = [isOpticalCable ? "Optical" : (isActiveCable ? "Active" : "Passive")]
         if let emarker {
-            parts.append(emarker.contentsWithheld
-                ? "has an e-marker"
-                : "e-marker read")
+            if emarker.contentsWithheld {
+                parts.append("has an e-marker")
+            } else if let speed = emarker.usbSpeed {
+                parts.append(speed)
+            } else {
+                parts.append("e-marker read")
+            }
         }
         return parts.joined(separator: " · ")
     }
@@ -301,7 +362,7 @@ enum PortMonitor {
             }
 
             collectPowerDelivery(under: service, into: &port, depth: 0)
-            collectEMarker(under: service, into: &port, depth: 0)
+            collectIdentities(under: service, into: &port, depth: 0)
             collectTransportState(under: service, into: &port, depth: 0)
             ports.append(port)
         }
@@ -380,12 +441,15 @@ enum PortMonitor {
         }
     }
 
-    /// Hunts for the cable's SOP' node, which hangs under the port's CC child.
+    /// Hunts for the PD Discover Identity nodes, which hang under the port's
+    /// CC child: SOP' is the chip in the cable, SOP is whatever is on the far
+    /// end of it.
     ///
-    /// Its mere presence is the finding on most Macs: the node only exists once
-    /// the hardware has actually talked to a chip in the cable. Where the
-    /// platform also publishes the Discover Identity VDOs, those are decoded.
-    private static func collectEMarker(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
+    /// Both are collected because a cable plugged in on its own has no far end
+    /// to answer at SOP, so its e-marker answers at the SOP address instead and
+    /// declares its cable identity there. Taking only SOP' missed those
+    /// entirely, and taking only SOP would have mistaken a charger for a cable.
+    private static func collectIdentities(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
         guard depth < 4 else { return }
         var iterator: io_iterator_t = 0
         guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
@@ -394,29 +458,76 @@ enum PortMonitor {
         while case let child = IOIteratorNext(iterator), child != 0 {
             defer { IOObjectRelease(child) }
 
+            // SOP' is tested first because it is a subclass of SOP: a SOP'
+            // node conforms to both, and testing the base class first would
+            // file every cable chip as the thing on the far end.
             if IOObjectConformsTo(child, "IOPortTransportComponentCCUSBPDSOPp") != 0,
                let properties = properties(of: child) {
-                var emarker = CableEMarker()
-                emarker.specificationRevision = int(properties["Specification Revision"])
-                emarker.vendorID = int(properties["Vendor ID"])
-                emarker.productID = int(properties["Product ID"])
-                emarker.productType = int(properties["Product Type"])
-                emarker.vdos = vdos(from: properties["VDOs"])
-                port.emarker = emarker
-                return
+                port.emarker = preferred(port.emarker, identity(from: properties))
+            } else if IOObjectConformsTo(child, "IOPortTransportComponentCCUSBPDSOP") != 0,
+                      let properties = properties(of: child) {
+                let responder = identity(from: properties)
+                // A responder that calls itself a passive or active cable is
+                // the cable, whichever address it answered at.
+                if responder.productType == 3 || responder.productType == 4 {
+                    port.emarker = preferred(port.emarker, responder)
+                } else if responder.identifiesItself {
+                    port.partner = preferred(port.partner, responder)
+                }
             }
-            collectEMarker(under: child, into: &port, depth: depth + 1)
-            if port.emarker != nil { return }
+            collectIdentities(under: child, into: &port, depth: depth + 1)
         }
     }
 
-    /// VDOs arrive as an array of four-byte blobs, most significant byte first.
+    /// Keeps whichever of two readings of the same endpoint actually says
+    /// something.
+    ///
+    /// A port can publish more than one node for the same address, and the
+    /// walk has no way to know which order it will meet them in. Assigning
+    /// unconditionally meant an empty node met second could wipe out a chip
+    /// that had already answered in full.
+    private static func preferred(_ existing: CableEMarker?, _ candidate: CableEMarker) -> CableEMarker {
+        guard let existing else { return candidate }
+        if existing.contentsWithheld, !candidate.contentsWithheld { return candidate }
+        return existing
+    }
+
+    /// Decodes one Discover Identity node's property dictionary.
+    ///
+    /// Split from the registry walk above so recorded captures can be replayed
+    /// through it — `--selftest` does exactly that, and this is the function
+    /// that was silently wrong for as long as it was only reachable through
+    /// live hardware.
+    ///
+    /// The identity fields are published twice: flat on the node, and again
+    /// inside `Metadata`. Only `Metadata` ever carries the VDOs, so it is read
+    /// first and the flat copies are the fallback.
+    static func identity(from properties: [String: Any]) -> CableEMarker {
+        let metadata = properties["Metadata"] as? [String: Any] ?? [:]
+        var identity = CableEMarker()
+        identity.specificationRevision = int(metadata["Specification Revision"])
+            ?? int(properties["Specification Revision"])
+        identity.vendorID = int(metadata["Vendor ID"]) ?? int(properties["Vendor ID"])
+        identity.productID = int(metadata["Product ID"]) ?? int(properties["Product ID"])
+        identity.productType = int(metadata["Product Type"]) ?? int(properties["Product Type"])
+        identity.productTypeDescription = (metadata["Product Type Description"] as? String)
+            ?? (properties["Product Type Description"] as? String)
+        identity.vdos = vdos(from: metadata["VDOs"] ?? properties["VDOs"])
+        return identity
+    }
+
+    /// VDOs arrive as an array of four-byte blobs, least significant byte first.
+    ///
+    /// The byte order is checkable without a spec to hand: the ID Header VDO
+    /// carries the vendor ID in its low 16 bits, and the same node publishes
+    /// that vendor ID as a plain integer alongside. Read little-endian the two
+    /// agree; read the other way round they never do.
     private static func vdos(from raw: Any?) -> [UInt32] {
         guard let entries = raw as? [Any] else { return [] }
         return entries.compactMap { entry in
             if let number = entry as? NSNumber { return number.uint32Value }
             guard let data = entry as? Data, data.count >= 4 else { return nil }
-            return data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            return data.prefix(4).reversed().reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         }
     }
 

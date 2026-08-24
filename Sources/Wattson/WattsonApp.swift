@@ -11,6 +11,20 @@ enum Entry {
         // `Wattson --dump` prints one reading as plain text, without the GUI.
         // `Wattson --watch` keeps printing the power line until interrupted.
         let arguments = CommandLine.arguments
+        // `Wattson --selftest` replays recorded captures through the readers'
+        // parse functions. It touches no hardware, so it is the only check
+        // here that means the same thing on a machine with nothing plugged in.
+        if arguments.contains("--selftest") {
+            exit(SelfTest.run())
+        }
+        // `Wattson --json` is `--dump` in a shape something else can read.
+        if arguments.contains("--json") {
+            let ports = PortMonitor.read()
+            var scan = Scanner.scan()
+            PowerAttribution.apply(to: &scan.devices, ports: ports, map: PowerAttribution.storedMap)
+            print(JSONOutput.render(power: PowerMonitor.read(), ports: ports, scan: scan))
+            exit(0)
+        }
         if arguments.contains("--dump") {
             let ports = PortMonitor.read()
             var scan = Scanner.scan()
@@ -21,6 +35,8 @@ enum Entry {
             dumpPorts(ports)
             print("")
             dumpDevices(scan)
+            print("")
+            dumpFaults()
             exit(0)
         }
         // `Wattson --throttle` prints thermal pressure and what the cores are
@@ -80,6 +96,26 @@ enum Entry {
             if let mac = power.macOnlyWatts { print(String(format: "Mac itself:  %.2f W", mac)) }
         }
         if let battery = power.batteryDescription { print("Battery:     \(battery)") }
+        let health = power.health
+        if health.hasAnything {
+            var parts: [String] = []
+            if let capacity = health.capacityPercent {
+                parts.append(String(format: "%.1f%% of design capacity", capacity))
+            }
+            if let cycles = health.cycleCount {
+                parts.append(health.designCycleCount.map { "\(cycles)/\($0) cycles" } ?? "\(cycles) cycles")
+            }
+            if let temperature = health.temperature {
+                parts.append(String(format: "%.1f °C", temperature))
+            }
+            print("Condition:   \(parts.joined(separator: " · "))")
+            if health.needsService { print("             SERVICE RECOMMENDED — the gauge has latched a fault") }
+        }
+        if let reason = power.chargingHold.summary(
+            externalConnected: power.externalConnected, isCharging: power.isCharging
+        ) {
+            print("Not charging: \(reason)")
+        }
         if let rating = power.adapterWatts {
             print(String(format: "Charger:     %.0f W rated (\(power.adapterName ?? "unknown"))", rating))
             let maker = power.adapterManufacturer ?? "not reported"
@@ -127,6 +163,26 @@ enum Entry {
                 print("   Pins:        \(pins)")
             }
         }
+    }
+
+    /// Lifetime fault counters. Printed here rather than only in the panel
+    /// because a dump is what somebody attaches to a bug report, and these are
+    /// the only numbers in the app that describe a fault that has already
+    /// finished happening.
+    private static func dumpFaults() {
+        print("=== RECORDED FAULTS ===")
+        var said = false
+        for stats in PortStatsMonitor.readControllers() where stats.hasFaults {
+            said = true
+            print("Port controller \(stats.index + 1):")
+            for entry in stats.faultCounts { print("   \(entry.name): \(entry.count)") }
+        }
+        for stats in PortStatsMonitor.readUSBPorts() where stats.hasFaults {
+            said = true
+            print(stats.portNumber.map { "USB port \($0):" } ?? "USB port:")
+            for entry in stats.faultCounts { print("   \(entry.name): \(entry.count)") }
+        }
+        if !said { print("None recorded since this machine was built.") }
     }
 
     private static func dumpDevices(_ result: ScanResult) {

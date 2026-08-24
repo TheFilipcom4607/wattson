@@ -81,9 +81,38 @@ struct MenuContentView: View {
                 Sparkline(samples: model.history).padding(.top, 2)
             }
 
+            if let hold = chargingHoldText { chargingHoldRow(hold) }
+
             if model.showThrottle, model.canReadSpeed { speedRow }
 
             if model.lowPower.isSupported { lowPowerRow }
+        }
+    }
+
+    /// Why the battery is not filling, when the charger has said why.
+    ///
+    /// This sits directly under the headline because it answers the question
+    /// the headline provokes: a charger delivering power while the percentage
+    /// refuses to move. Wattson could previously only report that the two
+    /// disagreed; the charger publishes its own account and this is it.
+    private var chargingHoldText: String? {
+        model.power.chargingHold.summary(
+            externalConnected: model.power.externalConnected,
+            isCharging: model.power.isCharging
+        )
+    }
+
+    private func chargingHoldRow(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: model.power.chargingHold.isThermallyLimited
+                  ? "thermometer.medium" : "pause.circle")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 
@@ -372,6 +401,10 @@ struct MenuContentView: View {
                             }
                         )
                     }
+                }
+
+                if model.showDebugOptions, !model.portFaults.isEmpty {
+                    PortFaultSection(faults: model.portFaults)
                 }
 
                 if model.showPortLimits, let limits = model.portLimitsSummary {
@@ -1219,5 +1252,48 @@ private struct MenuButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+    }
+}
+
+/// Lifetime fault counters, shown only when something has actually gone wrong
+/// and only with debug options on.
+///
+/// Behind the setting because a counter is history, not a reading: it can name
+/// a fault that happened once eighteen months ago, and there is nothing to be
+/// done about most of them. It earns its place when a dock keeps dropping off
+/// and there is otherwise no evidence at all that it ever happened.
+private struct PortFaultSection: View {
+    let faults: [PortFaultGroup]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("RECORDED FAULTS")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ForEach(faults) { group in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(group.name)
+                        .font(.system(size: 10, weight: .medium))
+                    ForEach(group.entries, id: \.name) { entry in
+                        HStack(spacing: 4) {
+                            Text(entry.name)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Text("\(entry.count)")
+                                .font(.system(size: 10))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Text("Counted since the machine was built, and never reset. "
+                 + "The controller does not say which physical port each set belongs to.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 4)
     }
 }

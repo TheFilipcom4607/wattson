@@ -270,6 +270,15 @@ enum NoticeBuilder {
             parts.append(String(format: "battery %+.1f W", battery))
         }
         if let percent = power.batteryPercent { parts.append("\(percent)%") }
+        // Where the charger has said why it is holding back, its own words beat
+        // an inference drawn from the wattage. This is still measured fact — a
+        // stated thermal limit or a zero setpoint — not a verdict about whether
+        // a bigger charger would have done better.
+        if let reason = power.chargingHold.summary(
+            externalConnected: power.externalConnected, isCharging: power.isCharging
+        ) {
+            parts.append(reason)
+        }
         return Notice(
             id: drainNoticeID,
             category: .power,

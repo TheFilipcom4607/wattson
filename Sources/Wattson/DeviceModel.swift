@@ -65,6 +65,10 @@ final class DeviceModel: ObservableObject {
             // Reading it costs a subprocess, so it is read when somebody is
             // about to look at it rather than on the timer.
             if isPresented { refreshLowPower() }
+            // Lifetime counters move a handful of times a year. Reading them
+            // on the power tick would be pure waste, so they are read when the
+            // panel opens, like Low Power Mode above.
+            if isPresented { refreshPortStats() }
             // Performance states are only worth subscribing to while somebody
             // is reading them, and the reader is nothing but a subscription and
             // one previous sample, so it costs nothing to build again.
@@ -798,6 +802,43 @@ final class DeviceModel: ObservableObject {
         guard !drainAnnounced, Date().timeIntervalSince(since) >= Self.drainSeconds else { return }
         drainAnnounced = true
         post(NoticeBuilder.drainingOnCharger(power))
+    }
+
+    // MARK: - Recorded faults
+
+    @Published private(set) var controllerStats: [PortControllerStats] = []
+    @Published private(set) var usbPortStats: [USBHostPortStats] = []
+
+    private func refreshPortStats() {
+        controllerStats = PortStatsMonitor.readControllers()
+        usbPortStats = PortStatsMonitor.readUSBPorts()
+    }
+
+    /// Only the counters that have actually moved.
+    ///
+    /// A machine where nothing has ever gone wrong produces an empty list and
+    /// the section does not appear at all — which is the point. A wall of
+    /// zeroes says nothing and would only teach people to ignore the section
+    /// on the day it finally has something in it.
+    var portFaults: [PortFaultGroup] {
+        var groups: [PortFaultGroup] = []
+        for stats in controllerStats where stats.hasFaults {
+            groups.append(PortFaultGroup(
+                id: "controller-\(stats.index)",
+                // Numbered by position in the controller's own array, because
+                // that is all the identity it gives us.
+                name: "Port controller \(stats.index + 1)",
+                entries: stats.faultCounts
+            ))
+        }
+        for stats in usbPortStats where stats.hasFaults {
+            groups.append(PortFaultGroup(
+                id: "usb-\(stats.id)",
+                name: stats.portNumber.map { "USB port \($0)" } ?? "USB port",
+                entries: stats.faultCounts
+            ))
+        }
+        return groups
     }
 
     /// A drain worth the name, and how long it has to hold for.

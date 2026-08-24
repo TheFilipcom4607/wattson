@@ -18,6 +18,106 @@ struct PDProfile: Identifiable, Hashable {
     var watts: Double { volts * amps }
 }
 
+/// What the pack itself says about its condition.
+///
+/// None of this moves on the timescale the rest of the panel does — a cycle
+/// count changes a few times a month — so it is read on the same tick as
+/// everything else purely because the property dictionary is already open.
+///
+/// The gauge publishes a great deal more than this under `BatteryData`
+/// (per-cell voltages, resistance tables, a daily state-of-charge history).
+/// What is taken here is the part whose meaning is unambiguous from its own
+/// name; the rest would need a decode nobody outside Apple can check.
+struct BatteryHealth: Hashable {
+    var cycleCount: Int?
+    /// What this pack's chemistry is rated for. 1000 on current Apple silicon.
+    var designCycleCount: Int?
+    /// Milliamp-hours the pack was built to hold.
+    var designCapacity: Double?
+    /// Milliamp-hours it currently holds — the figure Apple's own "Maximum
+    /// Capacity" is derived from.
+    var nominalChargeCapacity: Double?
+    /// Degrees Celsius.
+    var temperature: Double?
+    /// The warmest and coldest the pack has ever been, in whole degrees.
+    var maximumTemperature: Double?
+    var minimumTemperature: Double?
+    /// Non-zero means the gauge has latched a permanent fault.
+    var permanentFailureStatus: Int?
+    /// Times a cell has been seen to disconnect. Any of these is a hardware
+    /// fault, not wear.
+    var cellDisconnectCount: Int?
+
+    /// Capacity now against capacity when new.
+    ///
+    /// A fresh pack reads slightly *above* its design figure — this Mac's own
+    /// battery reports 4746 mAh against a 4629 mAh design — because the design
+    /// number is a floor the cells are built to clear, not an average. The
+    /// true ratio is kept here and the UI is what clamps the display to 100%,
+    /// so nothing is thrown away before anyone has looked at it.
+    var capacityPercent: Double? {
+        guard let design = designCapacity, design > 0, let now = nominalChargeCapacity
+        else { return nil }
+        return now / design * 100
+    }
+
+    /// How much of the rated cycle life has been used.
+    var cyclePercent: Double? {
+        guard let rated = designCycleCount, rated > 0, let used = cycleCount else { return nil }
+        return Double(used) / Double(rated) * 100
+    }
+
+    /// The one condition worth interrupting someone over. Wear is not a fault
+    /// and does not qualify: a pack at 79% is working exactly as designed.
+    var needsService: Bool {
+        (permanentFailureStatus ?? 0) != 0 || (cellDisconnectCount ?? 0) > 0
+    }
+
+    var hasAnything: Bool {
+        cycleCount != nil || capacityPercent != nil || temperature != nil
+    }
+}
+
+/// Why charging is not happening, or not happening at full speed.
+///
+/// The charger publishes a `NotChargingReason` bitmask which is deliberately
+/// **not** decoded into words here. Its bit meanings are not documented
+/// anywhere checkable, and the only value this Mac has been observed to report
+/// is 128 while running on battery with nothing attached — one data point is
+/// not a table. Inventing labels for the rest would be exactly the guessing
+/// this app refuses to do elsewhere, so the raw value is carried for the
+/// diagnostics pane and nothing is claimed about it.
+///
+/// The fields that *are* stated in words are the ones whose names say what
+/// they hold: a thermally-limited duration, an inhibit reason, and the
+/// charger's own current setpoint. A setpoint of zero while a charger is
+/// attached is the charger having decided not to charge, which is a fact
+/// rather than an inference.
+struct ChargingHold: Hashable {
+    /// Milliamps the charger intends to push. Zero means it has stopped.
+    var chargingCurrentMA: Double?
+    var chargingVoltageMV: Double?
+    var notChargingReason: Int?
+    var slowChargingReason: Int?
+    var inhibitReason: Int?
+    /// Seconds this charge has spent held back by heat.
+    var secondsThermallyLimited: Int?
+
+    var isThermallyLimited: Bool { (secondsThermallyLimited ?? 0) > 0 }
+    var isSlowed: Bool { (slowChargingReason ?? 0) != 0 }
+    var isInhibited: Bool { (inhibitReason ?? 0) != 0 }
+
+    /// What can be said out loud, given an adapter is attached and the battery
+    /// is not filling. Nil when there is nothing defensible to say.
+    func summary(externalConnected: Bool, isCharging: Bool) -> String? {
+        guard externalConnected, !isCharging else { return nil }
+        if isInhibited { return "The charger is holding charge back." }
+        if isThermallyLimited { return "Charging is being limited by temperature." }
+        if chargingCurrentMA == 0 { return "The charger has set its charge current to zero." }
+        return nil
+    }
+}
+
 /// A single reading of what power is flowing right now.
 struct PowerSnapshot {
     var externalConnected = false
@@ -44,6 +144,11 @@ struct PowerSnapshot {
     /// Positive while charging, negative while the battery is being drained.
     var batteryWatts: Double?
     var batteryPercent: Int?
+
+    /// What the pack reports about its own condition.
+    var health = BatteryHealth()
+    /// Why the battery is not filling, when a charger is attached and it isn't.
+    var chargingHold = ChargingHold()
 
     /// What the adapter is rated for, as opposed to what it is delivering.
     var adapterWatts: Double?
@@ -197,6 +302,9 @@ enum PowerMonitor {
             snapshot.batteryWatts = mV * mA / 1_000_000
         }
 
+        snapshot.health = health(from: properties)
+        snapshot.chargingHold = chargingHold(from: properties)
+
         if let adapter = properties["AdapterDetails"] as? [String: Any] {
             let watts = number(adapter["Watts"])
             snapshot.adapterWatts = (watts ?? 0) > 0 ? watts : nil
@@ -235,6 +343,53 @@ enum PowerMonitor {
         }
 
         return snapshot
+    }
+
+    /// Reads the pack's condition out of one `AppleSmartBattery` property
+    /// dictionary.
+    ///
+    /// Split from `read()` so recorded captures can be replayed through it —
+    /// see `--selftest`. Capacity and cycle figures sit at the top level;
+    /// the temperature extremes are inside the gauge's own `BatteryData`.
+    static func health(from properties: [String: Any]) -> BatteryHealth {
+        var health = BatteryHealth()
+        health.cycleCount = number(properties["CycleCount"]).map { Int($0) }
+        health.designCycleCount = number(properties["DesignCycleCount9C"]).map { Int($0) }
+        health.designCapacity = number(properties["DesignCapacity"])
+        health.nominalChargeCapacity = number(properties["NominalChargeCapacity"])
+            ?? number(properties["AppleRawMaxCapacity"])
+        // Tenths of a degree twice over: the property is in hundredths.
+        health.temperature = number(properties["Temperature"]).map { $0 / 100 }
+        health.permanentFailureStatus = number(properties["PermanentFailureStatus"]).map { Int($0) }
+        health.cellDisconnectCount = number(properties["BatteryCellDisconnectCount"]).map { Int($0) }
+
+        if let data = properties["BatteryData"] as? [String: Any] {
+            // Whole degrees here, unlike the top-level reading above.
+            health.maximumTemperature = number(data["MaximumTemperature"])
+            health.minimumTemperature = number(data["MinimumTemperature"])
+            if health.cycleCount == nil {
+                health.cycleCount = number(data["CycleCount"]).map { Int($0) }
+            }
+            if health.designCapacity == nil {
+                health.designCapacity = number(data["DesignCapacity"])
+            }
+        }
+        return health
+    }
+
+    /// Reads the charger's own account of why it is not charging.
+    ///
+    /// Split from `read()` for the same reason as `health(from:)`.
+    static func chargingHold(from properties: [String: Any]) -> ChargingHold {
+        guard let charger = properties["ChargerData"] as? [String: Any] else { return ChargingHold() }
+        var hold = ChargingHold()
+        hold.chargingCurrentMA = number(charger["ChargingCurrent"])
+        hold.chargingVoltageMV = number(charger["ChargingVoltage"])
+        hold.notChargingReason = number(charger["NotChargingReason"]).map { Int($0) }
+        hold.slowChargingReason = number(charger["SlowChargingReason"]).map { Int($0) }
+        hold.inhibitReason = number(charger["ChargerInhibitReason"]).map { Int($0) }
+        hold.secondsThermallyLimited = number(charger["TimeChargingThermallyLimited"]).map { Int($0) }
+        return hold
     }
 
     private static func number(_ value: Any?) -> Double? {
