@@ -49,6 +49,12 @@ struct SettingsView: View {
             case .notifications: notifications
             case .general: general
             }
+
+            // Every pane, not just General: it is what the window says about
+            // itself, and which pane you happen to be standing in is no reason
+            // for the version to be somewhere else.
+            Divider()
+            credits
         }
         .padding(20)
         .frame(width: 380, alignment: .leading)
@@ -164,10 +170,6 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Divider()
-
-            credits
         }
     }
 
