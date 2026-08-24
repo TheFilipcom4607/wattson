@@ -308,6 +308,14 @@ enum PowerMonitor {
         // it does for the wattage above — the registry copy is 10-30 s stale,
         // and watched over three seconds with nothing attached it held -401 mA
         // while the SMC reported -410, -554 and -455 in turn.
+        //
+        // These and `batteryWatts` are separate SMC samples, so under a load
+        // that is moving fast they can disagree by a lot for an instant: taken
+        // during a compile, 46.51 W arriving against a 32.77 W load implied
+        // 13.74 W into the cell while the terminals read 30.9 W. Neither is
+        // wrong. On a quiet machine they tie out — 45.9 in less 6.84 consumed
+        // is 39.06 W, against 12.370 V x 3.183 A = 39.4 W measured at the pack,
+        // with the registry agreeing at 39.0 W.
         let pack = SMCMonitor.battery()
         snapshot.batteryVolts = pack.volts ?? number(properties["Voltage"])
         snapshot.batteryAmps = pack.amps
