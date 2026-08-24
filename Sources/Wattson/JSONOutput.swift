@@ -31,7 +31,7 @@ enum JSONOutput {
 
         // Only what has actually gone wrong. A machine where nothing ever has
         // emits no key at all rather than a wall of zeroes.
-        let faults = faultObjects()
+        let faults = faultObjects(ports: ports)
         if !faults.isEmpty { root["recordedFaults"] = faults }
 
         guard let data = try? JSONSerialization.data(
@@ -44,15 +44,21 @@ enum JSONOutput {
 
     // MARK: - Sections
 
-    private static func faultObjects() -> [[String: Any]] {
+    private static func faultObjects(ports: [PortInfo]) -> [[String: Any]] {
         var out: [[String: Any]] = []
-        for stats in PortStatsMonitor.readControllers() where stats.hasFaults {
-            out.append([
-                // Numbered by position in the controller's own array, which is
-                // all the identity it gives us — not a physical port.
+        for stats in PortStatsMonitor.readControllers(attributedTo: ports) where stats.hasFaults {
+            var entry: [String: Any] = [
+                // Position in the controller's own array. Kept whether or not
+                // the port below resolved, because it is the only identity the
+                // array itself carries.
                 "controller": stats.index + 1,
                 "counts": Dictionary(uniqueKeysWithValues: stats.faultCounts.map { ($0.name, $0.count) }),
-            ])
+            ]
+            // Present only where the roster made the attribution safe. An
+            // absent key means these counters belong to a port nothing here can
+            // name, not to no port.
+            if let name = stats.portName { entry["port"] = name }
+            out.append(entry)
         }
         for stats in PortStatsMonitor.readUSBPorts() where stats.hasFaults {
             var entry: [String: Any] = [

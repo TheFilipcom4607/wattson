@@ -36,7 +36,7 @@ enum Entry {
             print("")
             dumpDevices(scan)
             print("")
-            dumpFaults()
+            dumpFaults(ports)
             exit(0)
         }
         // `Wattson --throttle` prints thermal pressure and what the cores are
@@ -212,12 +212,14 @@ enum Entry {
     /// because a dump is what somebody attaches to a bug report, and these are
     /// the only numbers in the app that describe a fault that has already
     /// finished happening.
-    private static func dumpFaults() {
+    private static func dumpFaults(_ ports: [PortInfo]) {
         print("=== RECORDED FAULTS ===")
         var said = false
-        for stats in PortStatsMonitor.readControllers() where stats.hasFaults {
+        for stats in PortStatsMonitor.readControllers(attributedTo: ports) where stats.hasFaults {
             said = true
-            print("Port controller \(stats.index + 1):")
+            // The port where the attribution held, and the bare array position
+            // where it did not — which is the same answer this always gave.
+            print("\(stats.portName ?? "Port controller \(stats.index + 1)"):")
             for entry in stats.faultCounts { print("   \(entry.name): \(entry.count)") }
         }
         for stats in PortStatsMonitor.readUSBPorts() where stats.hasFaults {

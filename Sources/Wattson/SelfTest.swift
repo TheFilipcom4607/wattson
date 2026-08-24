@@ -596,6 +596,77 @@ enum SelfTest {
         let noisyStats = PortStatsMonitor.usbPort(from: noisy, id: "test")
         checks.append(Check(name: "usb port: over-current and enumeration failures surface",
                             passed: noisyStats?.faultCounts.count == 2))
+        checks += attributionChecks()
+        return checks
+    }
+
+    /// A machine whose USB-C ports are numbered with a gap in them, which is
+    /// the case that tells the ordinal rule apart from "offset + 1 is the port
+    /// number". Both rules agree on 1 and 2; only one of them puts the third
+    /// entry on port 4.
+    private static func gappedPorts() -> [PortInfo] {
+        [
+            PortInfo(name: "USB-C 1", kind: .usbC, number: 1, isConnected: false),
+            PortInfo(name: "USB-C 2", kind: .usbC, number: 2, isConnected: false),
+            PortInfo(name: "USB-C 4", kind: .usbC, number: 4, isConnected: false),
+        ]
+    }
+
+    private static func attributionChecks() -> [Check] {
+        var checks: [Check] = []
+        let entries = (0..<3).map { PortControllerStats(index: $0) }
+
+        let gapped = PortStatsMonitor.attributed(entries, to: gappedPorts(), channels: [])
+        checks.append(Check(
+            name: "controller attribution: ports are taken in order, not by number",
+            passed: gapped.map(\.portName) == ["USB-C 1", "USB-C 2", "USB-C 4"],
+            detail: "got \(gapped.map { $0.portName ?? "nil" }.joined(separator: ", "))"))
+
+        // Three entries against two USB-C ports and a MagSafe: this Mac's own
+        // shape, and the trailing entry is the MagSafe controller.
+        let withMagSafe = [
+            PortInfo(name: "USB-C 1", kind: .usbC, number: 1, isConnected: false),
+            PortInfo(name: "USB-C 2", kind: .usbC, number: 2, isConnected: false),
+            PortInfo(name: "MagSafe 3", kind: .magSafe, number: 1, isConnected: false),
+        ]
+        let trailing = PortStatsMonitor.attributed(entries, to: withMagSafe, channels: [])
+        checks.append(Check(
+            name: "controller attribution: the spare entry is the MagSafe controller",
+            passed: trailing.map(\.portName) == ["USB-C 1", "USB-C 2", "MagSafe 3"],
+            detail: "got \(trailing.map { $0.portName ?? "nil" }.joined(separator: ", "))"))
+
+        // Two entries against three ports fits neither count, so nothing is
+        // named. A counter on the wrong port is worse than one on no port.
+        let short = PortStatsMonitor.attributed(Array(entries.prefix(2)), to: gappedPorts(), channels: [])
+        checks.append(Check(name: "controller attribution: an unexpected count names nothing",
+                            passed: short.allSatisfy { $0.portName == nil }))
+
+        // The keyed route: offset j is SMC channel j+1, and that channel names
+        // the port's own controller. Made to disagree here — channel 1 points
+        // at the port the ordinal rule puts third — and the whole attribution
+        // has to go, not just that entry.
+        var first = PortInfo(name: "USB-C 1", kind: .usbC, number: 1, isConnected: false)
+        first.controllerUUID = "aaaa0000000000000000000000000001"
+        var third = PortInfo(name: "USB-C 4", kind: .usbC, number: 4, isConnected: false)
+        third.controllerUUID = "aaaa0000000000000000000000000003"
+        let crossed = [first, PortInfo(name: "USB-C 2", kind: .usbC, number: 2, isConnected: false), third]
+        let disagreeing = [
+            SMCMonitor.PortChannel(index: 1, controllerUUID: "aaaa0000000000000000000000000003",
+                                   sourceDescription: nil, power: nil),
+        ]
+        checks.append(Check(
+            name: "controller attribution: a keyed disagreement drops the lot",
+            passed: PortStatsMonitor.attributed(entries, to: crossed, channels: disagreeing)
+                .allSatisfy { $0.portName == nil }))
+
+        let agreeing = [
+            SMCMonitor.PortChannel(index: 1, controllerUUID: "aaaa0000000000000000000000000001",
+                                   sourceDescription: nil, power: nil),
+        ]
+        checks.append(Check(
+            name: "controller attribution: a keyed agreement lets it stand",
+            passed: PortStatsMonitor.attributed(entries, to: crossed, channels: agreeing)
+                .map(\.portName) == ["USB-C 1", "USB-C 2", "USB-C 4"]))
         return checks
     }
 

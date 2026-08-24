@@ -11,13 +11,18 @@ import IOKit
 /// behind to look at by the time anyone opens the panel, and these counters
 /// are the record that it happened at all.
 ///
-/// The controller does not say which physical port each entry belongs to, so
-/// entries are numbered by their position in the array and nothing more is
-/// claimed. That is the same reason port numbering is hedged everywhere else.
+/// The controller does not say which physical port each entry belongs to. It
+/// does not have to: the array's order is itself the answer, and there is a
+/// second route to the same answer to check it against. See `attributed(_:to:)`.
 struct PortControllerStats: Identifiable, Hashable {
     /// Position in the controller's array. Not a port number.
     let index: Int
     var id: Int { index }
+
+    /// The port this entry describes, once the roster has made the attribution
+    /// safe. Nil where it has not, which is a real answer: an entry with no
+    /// port named against it is one nothing may be concluded about.
+    var portName: String?
 
     var attachCount: Int?
     var detachCount: Int?
@@ -100,6 +105,12 @@ struct USBHostPortStats: Identifiable, Hashable {
 /// often, so this is read on panel open rather than on the power tick.
 enum PortStatsMonitor {
 
+    /// The controller counters, with each entry attributed to the port it
+    /// belongs to wherever that is safe.
+    static func readControllers(attributedTo ports: [PortInfo]) -> [PortControllerStats] {
+        attributed(readControllers(), to: ports, channels: SMCMonitor.portChannels())
+    }
+
     static func readControllers() -> [PortControllerStats] {
         let service = IOServiceGetMatchingService(
             kIOMainPortDefault, IOServiceMatching("AppleSmartBattery")
@@ -139,6 +150,74 @@ enum PortStatsMonitor {
             stats.surpriseNackCount = int(entry["PortControllerSurpriseNackCount"])
             stats.firmwareVersion = int(entry["PortControllerFwVersion"])
             return stats
+        }
+    }
+
+    /// Names the physical port behind each `PortControllerInfo` entry.
+    ///
+    /// The array carries no port identifier at all, but its *order* does: entry
+    /// at offset i is the (i+1)-th USB-C port with the ports sorted ascending
+    /// by number, and where there is one more entry than there are USB-C ports
+    /// the last of them is the MagSafe controller. This Mac is that shape —
+    /// three entries against two USB-C ports and a MagSafe — and the trailing
+    /// entry is the one carrying 15 attaches, which is where this machine is
+    /// actually charged from.
+    ///
+    /// Note what the rule is *not*: offset + 1 == port number. That happens to
+    /// be the same thing while a machine numbers its USB-C ports 1..N, and is
+    /// wrong on the ones that do not — ports numbered {1, 2, 4} put every
+    /// counter past the gap on the wrong port. whatport establishes the
+    /// ordering rule across 237 machines with a single powered entry and a
+    /// single active USB-C source, including the eight non-contiguous ones, and
+    /// records no machine anywhere whose entry count was neither N nor N+1.
+    ///
+    /// Any other count and nothing is attributed at all. There is no
+    /// best-effort here: a counter on the wrong port is worse than a counter on
+    /// no port, because the whole point of these numbers is to tell somebody
+    /// which socket to stop using.
+    ///
+    /// Wherever a second, keyed route resolves, it has to agree or the whole
+    /// attribution is dropped. Entry offset j is SMC channel j+1, that channel
+    /// names its port controller in `D<n>UI`, and the port's own controller
+    /// node publishes the same UUID — an identification that never depends on
+    /// array order. On this Mac all three offsets resolve that way and all
+    /// three agree with the ordinal rule. Offsets where the chain does not
+    /// resolve are simply unchecked.
+    static func attributed(
+        _ entries: [PortControllerStats],
+        to ports: [PortInfo],
+        channels: [SMCMonitor.PortChannel]
+    ) -> [PortControllerStats] {
+        let usbC = ports.filter { $0.kind == .usbC && $0.number != nil }
+            .sorted { ($0.number ?? 0) < ($1.number ?? 0) }
+        let magSafe = ports.filter { $0.kind == .magSafe }
+        guard !usbC.isEmpty else { return entries }
+
+        var roster = usbC
+        if entries.count == usbC.count + 1, magSafe.count == 1 {
+            roster.append(magSafe[0])
+        }
+        guard entries.count == roster.count else { return entries }
+
+        // The keyed cross-check. A disagreement on any one offset drops the
+        // lot: two routes pointing different ways is not an attribution, and
+        // which of them is wrong is not something this can work out.
+        let portsByUUID = Dictionary(
+            ports.compactMap { port in port.controllerUUID.map { ($0, port) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for (offset, port) in roster.enumerated() {
+            guard let channel = channels.first(where: { $0.index == offset + 1 }),
+                  let uuid = channel.controllerUUID,
+                  let keyed = portsByUUID[uuid]
+            else { continue }
+            guard keyed.id == port.id else { return entries }
+        }
+
+        return zip(entries, roster).map { entry, port in
+            var attributed = entry
+            attributed.portName = port.name
+            return attributed
         }
     }
 
