@@ -47,6 +47,10 @@ struct DeviceNode: Identifiable, Hashable {
     /// The alternate mode a billboard device is there to report — "DisplayPort".
     var altMode: String?
     var altModeVersion: String?
+    /// The device's own account of an alternate mode that did not come up,
+    /// read out of its Billboard capability. Set only when something actually
+    /// failed: a mode that worked has nothing to explain.
+    var altModeFailure: String?
     /// Real VBUS draw, set only when this device is alone on its port so the
     /// port's measurement can be attributed to it unambiguously.
     var measuredWatts: Double?
@@ -271,6 +275,11 @@ struct DeviceNode: Identifiable, Hashable {
         }
         if let serial, !serial.isEmpty {
             lines.append("Serial: " + serial)
+        }
+        // Last, and only when there is one: this is the line that explains a
+        // dock whose display output does nothing.
+        if let altModeFailure {
+            lines.append("Alt mode: " + altModeFailure)
         }
         return lines
     }

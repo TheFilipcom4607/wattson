@@ -261,6 +261,9 @@ enum JSONOutput {
             "measuredWatts": node.measuredWatts,
             "hubBudgetMilliamps": node.hubBudgetMilliamps,
             "altMode": node.altMode,
+            // Present only when a mode actually failed. A device whose modes
+            // all came up emits no key rather than an empty one.
+            "altModeFailure": node.altModeFailure,
             "isApple": node.isApple,
             // A device with no serial is keyed on where it is plugged in, and
             // anything scripting against this needs to know which it got.

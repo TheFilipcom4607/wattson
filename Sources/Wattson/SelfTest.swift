@@ -34,6 +34,7 @@ enum SelfTest {
         checks += displayChecks()
         checks += smcChecks()
         checks += connectionStateChecks()
+        checks += billboardChecks()
         checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
@@ -183,6 +184,100 @@ enum SelfTest {
         silent.ccActive = nil
         checks.append(Check(name: "cc: a port with no CC node disagrees with nothing",
                             passed: !silent.occupancyDisagreement))
+        return checks
+    }
+
+    // MARK: - Billboard alternate modes
+
+    /// A Billboard capability built to the USB Billboard Device Class spec:
+    /// two alternate modes, DisplayPort having been attempted and failed,
+    /// Thunderbolt's having come up, and the device reporting that it cannot
+    /// talk USB-PD.
+    ///
+    /// This fixture is written from the specification, not lifted from a
+    /// capture — no device carrying one has ever been attached to this machine.
+    /// So it is worth being clear about what these checks do and do not prove.
+    /// They prove the offsets in `Billboard.capability(from:)` agree with the
+    /// offsets used to build this, and that a descriptor which does not add up
+    /// is refused. They do not prove the specification is what the hardware
+    /// sends. The first dock plugged into this Mac settles that, and the
+    /// length equation below is what stands in until one is.
+    private static func billboardDescriptor(
+        modes: [(svid: Int, index: Int, state: Int)],
+        claimedModeCount: Int? = nil,
+        failureInfo: UInt8 = 0x01
+    ) -> [UInt8] {
+        var capability = [UInt8](repeating: 0, count: 44 + modes.count * 4)
+        capability[0] = UInt8(44 + modes.count * 4)
+        capability[1] = 0x10                                  // DEVICE CAPABILITY
+        capability[2] = 0x0D                                  // BILLBOARD
+        capability[4] = UInt8(claimedModeCount ?? modes.count)
+        capability[5] = 0                                     // preferred mode
+        capability[40] = 0x21                                 // bcdVersion 1.21
+        capability[41] = 0x01
+        capability[42] = failureInfo
+        for (index, mode) in modes.enumerated() {
+            // Two bits per mode inside bmConfigured, which starts at offset 8.
+            capability[8 + index / 4] |= UInt8(mode.state << ((index % 4) * 2))
+            let base = 44 + index * 4
+            capability[base] = UInt8(mode.svid & 0xFF)
+            capability[base + 1] = UInt8((mode.svid >> 8) & 0xFF)
+            capability[base + 2] = UInt8(mode.index)
+        }
+        let total = 5 + capability.count
+        return [5, 0x0F, UInt8(total & 0xFF), UInt8(total >> 8), 1] + capability
+    }
+
+    private static func billboardChecks() -> [Check] {
+        var checks: [Check] = []
+        let bos = billboardDescriptor(modes: [
+            (svid: 0xFF01, index: 0, state: BillboardMode.State.failed.rawValue),
+            (svid: 0x8087, index: 1, state: BillboardMode.State.succeeded.rawValue),
+        ])
+        guard let capability = Billboard.parse(bos: bos) else {
+            checks.append(Check(name: "billboard: the capability is found inside the BOS descriptor",
+                                passed: false, detail: "parse returned nil"))
+            return checks
+        }
+        checks.append(Check(name: "billboard: the capability is found inside the BOS descriptor",
+                            passed: capability.modes.count == 2,
+                            detail: "got \(capability.modes.count) modes"))
+        checks.append(Check(
+            name: "billboard: each mode keeps its own SVID and its own outcome",
+            passed: capability.modes.first?.svid == 0xFF01
+                && capability.modes.first?.state == .failed
+                && capability.modes.last?.svid == 0x8087
+                && capability.modes.last?.state == .succeeded,
+            detail: "got \(capability.modes.map { "\($0.svidName) \($0.state)" }.joined(separator: ", "))"))
+        checks.append(Check(name: "billboard: the failing mode is the one reported",
+                            passed: capability.failures.count == 1
+                                && capability.summary?.contains("DisplayPort") == true))
+        checks.append(Check(name: "billboard: a device with no USB-PD says so alongside",
+                            passed: capability.lacksPowerDelivery
+                                && capability.summary?.contains("no USB-PD capability") == true,
+                            detail: "got \(capability.summary ?? "nil")"))
+
+        // A device whose modes all came up has nothing to explain, and a line
+        // reading "DisplayPort entered" under a working monitor is noise.
+        let working = billboardDescriptor(
+            modes: [(svid: 0xFF01, index: 0, state: BillboardMode.State.succeeded.rawValue)],
+            failureInfo: 0)
+        checks.append(Check(name: "billboard: a mode that came up is not worth a line",
+                            passed: Billboard.parse(bos: working)?.summary == nil))
+
+        // The guard that stands in for a real capture: a descriptor claiming a
+        // different number of modes than its own length accounts for has not
+        // been understood, whatever else it might look like.
+        let inconsistent = billboardDescriptor(
+            modes: [(svid: 0xFF01, index: 0, state: 2)], claimedModeCount: 3)
+        checks.append(Check(name: "billboard: a descriptor that does not add up is refused",
+                            passed: Billboard.parse(bos: inconsistent) == nil))
+
+        checks.append(Check(name: "billboard: a device with no BOS descriptor reports nothing",
+                            passed: Billboard.parse(bos: [0, 0, 0, 0, 0]) == nil))
+        // A zero-length capability descriptor would walk the BOS list forever.
+        checks.append(Check(name: "billboard: a zero-length capability does not hang the walk",
+                            passed: Billboard.parse(bos: [5, 0x0F, 9, 0, 1, 0, 0x10, 0x0D, 0]) == nil))
         return checks
     }
 

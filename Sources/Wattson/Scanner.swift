@@ -49,6 +49,10 @@ enum Scanner {
             }
             node.isApple = node.vendorID == 0x05AC
             node.controller = (location >> 24) & 0xFF
+            // The device's own account of an alt mode that failed. Cached by
+            // location, so this costs two control transfers once per device
+            // rather than twice per device per scan.
+            node.altModeFailure = Billboard.capability(for: service, locationID: location)?.summary
             node.typeLabel = functionLabel(for: service, properties: properties)
 
             if let bits = (properties["UsbLinkSpeed"] as? NSNumber)?.doubleValue, bits > 0 {
@@ -73,6 +77,9 @@ enum Scanner {
             byLocation[location] = node
             order.append(location)
         }
+
+        // Anything unplugged since the last scan stops being worth remembering.
+        Billboard.forget(except: Set(order))
 
         // A locationID encodes the port path: 0x01210000 hangs off 0x01200000.
         var roots: [DeviceNode] = []
