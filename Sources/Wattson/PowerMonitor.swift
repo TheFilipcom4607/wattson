@@ -144,6 +144,15 @@ struct PowerSnapshot {
     /// Positive while charging, negative while the battery is being drained.
     var batteryWatts: Double?
     var batteryPercent: Int?
+    /// The pack's own terminals, live. The IORegistry copy of these sits still
+    /// for 10-30 s at a stretch; these come from the SMC and move every sample.
+    var batteryVolts: Double?
+    var batteryAmps: Double?
+    /// The gauge's own runtime estimate, in minutes, and only ever the one that
+    /// applies: a discharging pack has no time-to-full and says so with 0xFFFF,
+    /// which is dropped rather than shown as a 45-day charge.
+    var minutesToEmpty: Int?
+    var minutesToFull: Int?
 
     /// What the pack reports about its own condition.
     var health = BatteryHealth()
@@ -295,10 +304,21 @@ enum PowerMonitor {
             }
         }
 
+        // The pack's own terminals. The SMC answers first for the same reason
+        // it does for the wattage above — the registry copy is 10-30 s stale,
+        // and watched over three seconds with nothing attached it held -401 mA
+        // while the SMC reported -410, -554 and -455 in turn.
+        let pack = SMCMonitor.battery()
+        snapshot.batteryVolts = pack.volts ?? number(properties["Voltage"])
+        snapshot.batteryAmps = pack.amps
+            ?? number(properties["InstantAmperage"])
+            ?? number(properties["Amperage"])
+        snapshot.minutesToEmpty = pack.minutesToEmpty
+        snapshot.minutesToFull = pack.minutesToFull
+
         // Fall back to battery voltage x amperage if telemetry is unavailable.
         if snapshot.batteryWatts == nil,
-           let mV = number(properties["Voltage"]),
-           let mA = number(properties["InstantAmperage"]) ?? number(properties["Amperage"]) {
+           let mV = snapshot.batteryVolts, let mA = snapshot.batteryAmps {
             snapshot.batteryWatts = mV * mA / 1_000_000
         }
 
@@ -364,9 +384,19 @@ enum PowerMonitor {
         health.cellDisconnectCount = number(properties["BatteryCellDisconnectCount"]).map { Int($0) }
 
         if let data = properties["BatteryData"] as? [String: Any] {
-            // Whole degrees here, unlike the top-level reading above.
-            health.maximumTemperature = number(data["MaximumTemperature"])
-            health.minimumTemperature = number(data["MinimumTemperature"])
+            // These sit in LifetimeData, not beside it. Read from BatteryData
+            // directly they were never once present, so the warmest and coldest
+            // the pack has ever been have been blank for the whole life of the
+            // app rather than merely unavailable.
+            if let lifetime = data["LifetimeData"] as? [String: Any] {
+                let range = lifetimeTemperatureRange(
+                    minimum: number(lifetime["MinimumTemperature"]),
+                    maximum: number(lifetime["MaximumTemperature"]),
+                    current: health.temperature
+                )
+                health.minimumTemperature = range?.minimum
+                health.maximumTemperature = range?.maximum
+            }
             if health.cycleCount == nil {
                 health.cycleCount = number(data["CycleCount"]).map { Int($0) }
             }
@@ -375,6 +405,60 @@ enum PowerMonitor {
             }
         }
         return health
+    }
+
+    /// The pack's lifetime temperature extremes in whole degrees, or nothing
+    /// when the scale cannot be settled.
+    ///
+    /// `LifetimeData` carries no unit and no version, and the scale is not the
+    /// same on every machine: some packs report these in whole degrees and some
+    /// in tenths. Printing them raw is how another tool came to tell somebody
+    /// their battery had reached 454 °C. The fuel gauge part number predicts it
+    /// well but not reliably, so it is settled from the numbers instead:
+    ///
+    /// 1. A lifetime *maximum* above 80 can only be tenths. No pack in service
+    ///    reaches 80 °C, and none has a lifetime maximum as low as 8 °C, so the
+    ///    threshold sits in a gap rather than on a boundary.
+    /// 2. `Temperature`, whose scale we do know, has to fall inside a range the
+    ///    pack has actually lived through.
+    ///
+    /// When the two disagree, nothing is reported. A temperature that might be
+    /// out by a factor of ten is worse than a blank line. The minimum is
+    /// deliberately not consulted: a reading like -123 is a believable -12.3 °C
+    /// in tenths and nonsense in whole degrees, so it cannot discriminate, and
+    /// the pair is scaled together off the maximum.
+    ///
+    /// This Mac reports 1 and 38 against a current reading of 30.2 °C: whole
+    /// degrees by both tests.
+    static func lifetimeTemperatureRange(
+        minimum: Double?, maximum: Double?, current: Double?
+    ) -> (minimum: Double, maximum: Double)? {
+        guard let minimum, let maximum, minimum <= maximum else { return nil }
+        // An uninitialised blob reads as zero either way round, so there is
+        // nothing to choose between and nothing worth showing.
+        guard !(minimum == 0 && maximum == 0) else { return nil }
+
+        let whole = (minimum: minimum, maximum: maximum)
+        let tenths = (minimum: minimum / 10, maximum: maximum / 10)
+        /// A range no battery could have lived through is not a resolved scale,
+        /// whichever way it is read.
+        func plausible(_ range: (minimum: Double, maximum: Double)) -> Bool {
+            range.minimum >= -40 && range.maximum <= 100
+        }
+        let byMagnitude = maximum > 80 ? tenths : whole
+
+        // With no reading to check against, magnitude stands alone rather than
+        // withholding the answer from the machines least able to spare it.
+        guard let current else { return plausible(byMagnitude) ? byMagnitude : nil }
+
+        let fits = [whole, tenths].filter {
+            plausible($0) && $0.minimum - 1 <= current && current <= $0.maximum + 1
+        }
+        // Containment settles what magnitude cannot, but it does not get to
+        // overrule it: two signals pointing opposite ways is not a resolved
+        // scale, and neither is both readings looking reasonable at once.
+        guard fits.count == 1, fits[0] == byMagnitude else { return nil }
+        return fits[0]
     }
 
     /// Reads the charger's own account of why it is not charging.

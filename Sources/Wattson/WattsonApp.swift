@@ -96,6 +96,15 @@ enum Entry {
             if let mac = power.macOnlyWatts { print(String(format: "Mac itself:  %.2f W", mac)) }
         }
         if let battery = power.batteryDescription { print("Battery:     \(battery)") }
+        if let volts = power.batteryVolts, let amps = power.batteryAmps {
+            print(String(format: "Pack rail:   %.3f V / %+.3f A", volts / 1000, amps / 1000))
+        }
+        if let minutes = power.minutesToEmpty {
+            print("Runs for:    \(minutes / 60) h \(minutes % 60) min at the current draw")
+        }
+        if let minutes = power.minutesToFull {
+            print("Full in:     \(minutes / 60) h \(minutes % 60) min")
+        }
         let health = power.health
         if health.hasAnything {
             var parts: [String] = []
@@ -109,6 +118,9 @@ enum Entry {
                 parts.append(String(format: "%.1f °C", temperature))
             }
             print("Condition:   \(parts.joined(separator: " · "))")
+            if let low = health.minimumTemperature, let high = health.maximumTemperature {
+                print(String(format: "Ever been:   %.0f °C to %.0f °C", low, high))
+            }
             if health.needsService { print("             SERVICE RECOMMENDED — the gauge has latched a fault") }
         }
         if let reason = power.chargingHold.summary(

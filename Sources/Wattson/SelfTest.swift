@@ -32,6 +32,8 @@ enum SelfTest {
         checks += liquidChecks()
         checks += phyChecks()
         checks += displayChecks()
+        checks += smcChecks()
+        checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -49,6 +51,115 @@ enum SelfTest {
         let name: String
         let passed: Bool
         var detail: String?
+    }
+
+    // MARK: - SMC decoding and the D-channel join
+
+    /// Four SMC keys read at the same instant as the IORegistry values they
+    /// have to equal, captured on this Mac.
+    ///
+    /// This is the self-validating shape the identity fixtures use, applied to
+    /// a question that is otherwise a matter of opinion: the raw bytes are here
+    /// beside a figure published independently elsewhere in the system, and no
+    /// byte order but the right one makes all four agree. Read the other way
+    /// round the cycle count is 3328 and the design capacity 5394, which is
+    /// what every capture said before this.
+    private static let smcIntegerCapture: [(key: String, type: String, bytes: [UInt8], registry: Int)] = [
+        // AppleSmartBattery.CycleCount
+        (key: "B0CT", type: "ui16", bytes: [0x0d, 0x00], registry: 13),
+        // AppleSmartBattery.DesignCapacity
+        (key: "B0DC", type: "ui16", bytes: [0x15, 0x12], registry: 4629),
+        // AppleSmartBattery.BatteryData.Qmax[0]
+        (key: "BQX1", type: "ui16", bytes: [0x25, 0x13], registry: 4901),
+        // AppleSmartBattery.BatteryData.DataFlashWriteCount
+        (key: "BFWC", type: "ui16", bytes: [0x8b, 0x12], registry: 4747),
+    ]
+
+    private static func smcChecks() -> [Check] {
+        var checks: [Check] = []
+        for capture in smcIntegerCapture {
+            let decoded = SMCMonitor.decode(bytes: capture.bytes, type: capture.type, key: capture.key)
+            checks.append(Check(
+                name: "smc: \(capture.key) agrees with the value the registry publishes",
+                passed: decoded == String(capture.registry),
+                detail: "got \(decoded ?? "nil"), registry says \(capture.registry)"))
+        }
+
+        // `#KEY` is the controller's own key count and is the one key that is
+        // genuinely big-endian. Read like the rest it comes out as 1376256000.
+        checks.append(Check(
+            name: "smc: #KEY is still read big-endian",
+            passed: SMCMonitor.decode(bytes: [0x00, 0x00, 0x08, 0x52], type: "ui32", key: "#KEY") == "2130",
+            detail: "got \(SMCMonitor.decode(bytes: [0x00, 0x00, 0x08, 0x52], type: "ui32", key: "#KEY") ?? "nil")"))
+
+        // A rail is claimed by the controller that names it, not by the port
+        // whose number happens to match. The numbering here is deliberately
+        // crossed: it is the case the UUID exists to survive.
+        let channels = [
+            SMCMonitor.PortChannel(index: 1, controllerUUID: "aaaa0000000000000000000000000001",
+                                   sourceDescription: "pd charger",
+                                   power: SMCMonitor.PortPower(volts: 20, amps: 2.25)),
+            SMCMonitor.PortChannel(index: 2, controllerUUID: "aaaa0000000000000000000000000002",
+                                   sourceDescription: nil, power: nil),
+        ]
+        var far = PortInfo(name: "USB-C", kind: .usbC, number: 4, isConnected: true)
+        far.controllerUUID = "aaaa0000000000000000000000000001"
+        checks.append(Check(
+            name: "smc: a rail follows its controller, not the matching port number",
+            passed: PortMonitor.channel(for: far, among: channels)?.index == 1,
+            detail: "port 4 should take channel 1, got \(PortMonitor.channel(for: far, among: channels)?.index.description ?? "nil")"))
+
+        var unknown = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
+        unknown.controllerUUID = nil
+        checks.append(Check(
+            name: "smc: a port that names no controller takes no rail",
+            passed: PortMonitor.channel(for: unknown, among: channels) == nil,
+            detail: "matching by number here is how a port's power lands on its neighbour"))
+
+        // A machine whose SMC publishes no UUIDs at all is the one case where
+        // matching numbers is the best available answer, and is what Wattson
+        // has always done.
+        let unnamed = [
+            SMCMonitor.PortChannel(index: 1, controllerUUID: nil, sourceDescription: nil, power: nil),
+            SMCMonitor.PortChannel(index: 2, controllerUUID: nil, sourceDescription: nil,
+                                   power: SMCMonitor.PortPower(volts: 5, amps: 0.5)),
+        ]
+        var plain = PortInfo(name: "USB-C", kind: .usbC, number: 2, isConnected: true)
+        plain.controllerUUID = nil
+        checks.append(Check(
+            name: "smc: without DxUI anywhere, rail number is still used",
+            passed: PortMonitor.channel(for: plain, among: unnamed)?.index == 2))
+        return checks
+    }
+
+    // MARK: - Lifetime pack temperature
+
+    private static func packTemperatureChecks() -> [Check] {
+        var checks: [Check] = []
+        // This Mac: whole degrees by magnitude, and the current reading sits
+        // inside the range, so both signals agree.
+        let whole = PowerMonitor.lifetimeTemperatureRange(minimum: 1, maximum: 38, current: 30.2)
+        checks.append(Check(name: "pack temperature: whole degrees read as whole degrees",
+                            passed: whole?.minimum == 1 && whole?.maximum == 38,
+                            detail: "got \(whole.map { "\($0.minimum)...\($0.maximum)" } ?? "nil")"))
+
+        // The reading that had another tool reporting 454 °C.
+        let tenths = PowerMonitor.lifetimeTemperatureRange(minimum: -80, maximum: 454, current: 30.2)
+        checks.append(Check(name: "pack temperature: 454 is 45.4 °C, not 454 °C",
+                            passed: tenths?.maximum == 45.4 && tenths?.minimum == -8,
+                            detail: "got \(tenths.map { "\($0.minimum)...\($0.maximum)" } ?? "nil")"))
+
+        // Magnitude says tenths, containment says whole degrees. Two signals
+        // pointing opposite ways is not a resolved scale.
+        checks.append(Check(name: "pack temperature: a disagreement reports nothing",
+                            passed: PowerMonitor.lifetimeTemperatureRange(
+                                minimum: 20, maximum: 90, current: 85) == nil))
+
+        // An uninitialised blob reads as zero whichever way it is scaled.
+        checks.append(Check(name: "pack temperature: an empty range is not a reading",
+                            passed: PowerMonitor.lifetimeTemperatureRange(
+                                minimum: 0, maximum: 0, current: 30.2) == nil))
+        return checks
     }
 
     // MARK: - PD Discover Identity
@@ -329,9 +440,15 @@ enum SelfTest {
         "PermanentFailureStatus": 0,
         "BatteryCellDisconnectCount": 0,
         "BatteryData": [
-            "MaximumTemperature": 38,
-            "MinimumTemperature": 1,
             "CycleCount": 12,
+            // The extremes are one level down, in LifetimeData, and this
+            // fixture used to put them beside it — matching what the reader
+            // expected rather than what the hardware publishes, so it passed
+            // while the app showed nothing.
+            "LifetimeData": [
+                "MaximumTemperature": 38,
+                "MinimumTemperature": 1,
+            ] as [String: Any],
         ] as [String: Any],
         "ChargerData": [
             "ChargingVoltage": 4249,
@@ -360,8 +477,9 @@ enum SelfTest {
                             detail: "got \(show(health.capacityPercent))%"))
         checks.append(Check(name: "battery: cycle life used", passed: health.cyclePercent == 1.2,
                             detail: "got \(show(health.cyclePercent))%"))
-        checks.append(Check(name: "battery: temperature extremes come from BatteryData",
-                            passed: health.maximumTemperature == 38 && health.minimumTemperature == 1))
+        checks.append(Check(name: "battery: temperature extremes come from LifetimeData",
+                            passed: health.maximumTemperature == 38 && health.minimumTemperature == 1,
+                            detail: "got \(show(health.minimumTemperature)) to \(show(health.maximumTemperature))"))
         checks.append(Check(name: "battery: a healthy pack does not ask for service",
                             passed: !health.needsService))
 

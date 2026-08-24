@@ -249,6 +249,15 @@ struct PortInfo: Identifiable, Hashable {
     /// "Policy Authorized" once the user has allowed the accessory; "Not
     /// Required" for anything the policy does not cover.
     var authorization: String?
+    /// The port controller's own UUID, as its registry node publishes it and
+    /// as the SMC repeats it in `D<n>UI`. The join key between the two; it says
+    /// nothing about where the port is on the case.
+    var controllerUUID: String?
+    /// How the SMC describes whatever is on this port's rail, in its own words
+    /// — "pd charger". Only carried while the port is occupied: the label is
+    /// still there with nothing plugged in, the same way a parked lane keeps
+    /// reporting its last assignment.
+    var sourceDescription: String?
     /// The Thunderbolt controller fronting this port, when there is one.
     var thunderbolt: ThunderboltLink?
     /// The connector's own liquid-detection circuit. Nil on ports that have
@@ -416,7 +425,10 @@ enum PortMonitor {
         ) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
 
-        let vbus = SMCMonitor.portPower()
+        // The SMC names the controller each rail belongs to, so the rails are
+        // joined to ports by that name rather than by matching numbers. See
+        // `channel(for:)`.
+        let channels = SMCMonitor.portChannels()
         // One read for the whole machine rather than one per port.
         let thunderbolt = ThunderboltMonitor.read()
         let phys = PhyMonitor.read()
@@ -436,11 +448,17 @@ enum PortMonitor {
                 number: number,
                 isConnected: properties["ConnectionActive"] as? Bool ?? false
             )
-            // MagSafe has no VBUS rail, and shares port number 1 with USB-C.
-            if kind == .usbC, let number, let power = vbus[number] {
+            port.controllerUUID = controllerUUID(of: service)
+            let channel = self.channel(for: port, among: channels)
+            // MagSafe has no VBUS rail to measure, and shares port number 1
+            // with USB-C.
+            if kind == .usbC, let power = channel?.power {
                 port.outputVolts = power.volts
                 port.outputAmps = power.amps
                 port.outputWatts = power.watts
+            }
+            if port.isConnected {
+                port.sourceDescription = channel?.sourceDescription
             }
             // Socket ID and HPM port number are both logical numbering of the
             // same controllers, and they agree on this Mac. Neither says
@@ -716,6 +734,57 @@ enum PortMonitor {
         case "2": return "USB-C (rear)"
         default: return "USB-C \(index)"
         }
+    }
+
+    /// Which SMC rail belongs to this port.
+    ///
+    /// Preferred route is the controller UUID: the port's controller node
+    /// publishes `UUID`, the SMC publishes the same value as `D<n>UI`, and
+    /// matching them is an identity rather than an inference. On this Mac D1UI
+    /// is B918D52A-F329-3551-66A6-2B5FDC393D64, which is the `UUID` of the
+    /// `AppleHPMDeviceHALType3` node that Port-USB-C@1 hangs off; D2UI is the
+    /// one behind Port-USB-C@2.
+    ///
+    /// The old rule — rail number equals port number — is kept only for a
+    /// machine whose SMC publishes no `D<n>UI` at all, where it is the best
+    /// that can be done and is what Wattson has always done. It is not used as
+    /// a fallback for an individual port that fails to match: on a machine that
+    /// does publish the key, a port that matches nothing has genuinely told us
+    /// nothing, and guessing there is how a port's measured VBUS ends up
+    /// credited to its neighbour.
+    static func channel(
+        for port: PortInfo, among channels: [SMCMonitor.PortChannel]
+    ) -> SMCMonitor.PortChannel? {
+        if channels.contains(where: { $0.controllerUUID != nil }) {
+            guard let uuid = port.controllerUUID else { return nil }
+            return channels.first { $0.controllerUUID == uuid }
+        }
+        guard let number = port.number else { return nil }
+        return channels.first { $0.index == number }
+    }
+
+    /// The port controller's UUID, normalised to the form the SMC uses.
+    ///
+    /// The controller is the port node's parent: `Port-USB-C@1` hangs off an
+    /// `AppleHPMDeviceHALType3` node, and the UUID is on the parent, not the
+    /// port. Matched on the property rather than the parent's class, which is
+    /// versioned the same way the liquid-detection node's is.
+    private static func controllerUUID(of service: io_registry_entry_t) -> String? {
+        var parent: io_registry_entry_t = 0
+        guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &parent) == KERN_SUCCESS
+        else { return nil }
+        defer { IOObjectRelease(parent) }
+        guard let uuid = properties(of: parent)?["UUID"] as? String else { return nil }
+        return normalisedUUID(uuid)
+    }
+
+    /// "B918D52A-F329-..." -> "b918d52af329...". The SMC carries the same
+    /// sixteen bytes with no dashes and no case, so both sides are reduced to
+    /// that before they are compared.
+    static func normalisedUUID(_ value: String) -> String? {
+        let hex = value.lowercased().filter { $0.isHexDigit }
+        guard hex.count == 32 else { return nil }
+        return hex
     }
 
     private static func properties(of service: io_registry_entry_t) -> [String: Any]? {
