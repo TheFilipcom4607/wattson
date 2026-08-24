@@ -151,6 +151,13 @@ enum Entry {
         print("=== PORTS ===")
         for port in ports {
             print("\(port.name): \(port.isConnected ? "connected" : "empty")")
+            // Printed before the empty-port skip on purpose: half the ways this
+            // can disagree are a port that reads empty while the CC line says
+            // otherwise, and skipping would hide exactly those.
+            if port.occupancyDisagreement {
+                let cc = port.ccActive == true ? "something is" : "nothing is"
+                print("   NOTE:        The CC line says \(cc) in this port. The controller disagrees.")
+            }
             guard port.isConnected else { continue }
             print("   Attached:    \(port.attachedHeadline)")
             if port.describesCable {
@@ -183,6 +190,12 @@ enum Entry {
             }
             if port.displayIsUsingAllLanes {
                 print("   NOTE:        The display has both lanes; anything else here is on USB 2.0.")
+            }
+            if let state = port.authentication {
+                print("   Auth:        \(state)")
+            }
+            if let source = port.sourceDescription {
+                print("   SMC calls it: \(source)")
             }
             if let liquid = port.liquid?.summary {
                 print("   LIQUID:      \(liquid)")

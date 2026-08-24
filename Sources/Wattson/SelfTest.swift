@@ -33,6 +33,7 @@ enum SelfTest {
         checks += phyChecks()
         checks += displayChecks()
         checks += smcChecks()
+        checks += connectionStateChecks()
         checks += packTemperatureChecks()
 
         let failures = checks.filter { !$0.passed }
@@ -129,6 +130,59 @@ enum SelfTest {
         checks.append(Check(
             name: "smc: without DxUI anywhere, rail number is still used",
             passed: PortMonitor.channel(for: plain, among: unnamed)?.index == 2))
+        return checks
+    }
+
+    // MARK: - What the CC line says about the socket
+
+    /// This Mac's own `IOPortTransportStateCC` node for USB-C port 1, read with
+    /// nothing plugged in.
+    private static let ccCapture: [String: Any] = [
+        "Active": false,
+        "TransportTypeDescription": "CC",
+        "ParentBuiltInPortNumber": 1,
+        "ParentPortTypeDescription": "USB-C",
+        "AuthenticationStatus": 0,
+        "AuthenticationStatusDescription": "Idle",
+        "AuthenticationRequired": false,
+        "AuthorizationStatusDescription": "Not Required",
+        "Tunneled": false,
+    ]
+
+    private static func connectionStateChecks() -> [Check] {
+        var checks: [Check] = []
+        let idle = PortMonitor.connectionState(from: ccCapture)
+        checks.append(Check(name: "cc: an empty socket reports nothing on the line",
+                            passed: !idle.active))
+        // "Idle" is what every port that has never authenticated anything says,
+        // and a line reading "Auth: Idle" on all three ports is noise.
+        checks.append(Check(name: "cc: an idle handshake is not a state worth a line",
+                            passed: idle.authentication == nil,
+                            detail: "got \(idle.authentication ?? "nil")"))
+
+        var challenged = ccCapture
+        challenged["Active"] = true
+        challenged["AuthenticationStatusDescription"] = "Authentication Failed"
+        let failed = PortMonitor.connectionState(from: challenged)
+        checks.append(Check(name: "cc: a live socket and a real handshake both survive",
+                            passed: failed.active && failed.authentication == "Authentication Failed",
+                            detail: "got \(failed.active), \(failed.authentication ?? "nil")"))
+
+        // The two occupancy readings come from different places, so the
+        // interesting case is them disagreeing — including the direction where
+        // the port reads empty, which is the one a connected-only view hides.
+        var quiet = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: false)
+        quiet.ccActive = true
+        checks.append(Check(name: "cc: a plug the controller has not noticed is a disagreement",
+                            passed: quiet.occupancyDisagreement))
+        var agreed = quiet
+        agreed.ccActive = false
+        checks.append(Check(name: "cc: two readings that agree are not a disagreement",
+                            passed: !agreed.occupancyDisagreement))
+        var silent = quiet
+        silent.ccActive = nil
+        checks.append(Check(name: "cc: a port with no CC node disagrees with nothing",
+                            passed: !silent.occupancyDisagreement))
         return checks
     }
 

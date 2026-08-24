@@ -152,6 +152,12 @@ enum JSONOutput {
             "tunnelled": port.isTunnelled,
             "restricted": port.isRestricted,
             "authorization": port.authorization,
+            "authentication": port.authentication,
+            // The CC line's own answer, kept beside `connected` rather than
+            // folded into it: they are read from different places and there is
+            // no third opinion to settle a disagreement with.
+            "ccActive": port.ccActive,
+            "sourceDescription": port.sourceDescription,
             "connectionCount": port.connectionCount,
             "outputWatts": port.outputWatts,
             "outputVolts": port.outputVolts,

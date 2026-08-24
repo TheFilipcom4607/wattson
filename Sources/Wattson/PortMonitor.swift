@@ -249,6 +249,29 @@ struct PortInfo: Identifiable, Hashable {
     /// "Policy Authorized" once the user has allowed the accessory; "Not
     /// Required" for anything the policy does not cover.
     var authorization: String?
+    /// Whether the CC line itself says something is in the socket.
+    ///
+    /// A second opinion on `isConnected`, which comes from the port
+    /// controller's own `ConnectionActive`. CC is the pair of wires a plug
+    /// physically shorts, so it is as close to "is there a cable in there" as
+    /// this Mac can answer. Nil on a port that publishes no CC node.
+    var ccActive: Bool?
+    /// Where the accessory has got to in macOS's authentication handshake,
+    /// which is a separate axis from `authorization`: authentication is the
+    /// accessory proving what it is, authorisation is the policy deciding
+    /// whether to let it in. "Idle" on everything that never starts one.
+    var authentication: String?
+
+    /// The CC line and the port controller disagree about whether anything is
+    /// plugged in.
+    ///
+    /// Worth saying because the two are read from different places for
+    /// different reasons, and there is no third opinion to break the tie — so
+    /// this is reported as a disagreement rather than resolved into an answer.
+    var occupancyDisagreement: Bool {
+        guard let ccActive else { return false }
+        return ccActive != isConnected
+    }
     /// The port controller's own UUID, as its registry node publishes it and
     /// as the SMC repeats it in `D<n>UI`. The join key between the two; it says
     /// nothing about where the port is on the case.
@@ -553,6 +576,13 @@ enum PortMonitor {
         while case let child = IOIteratorNext(iterator), child != 0 {
             defer { IOObjectRelease(child) }
             if IOObjectConformsTo(child, "IOPortTransportState") != 0, let properties = properties(of: child) {
+                // The CC node is the one transport that answers about the
+                // socket rather than about a protocol running over it.
+                if IOObjectConformsTo(child, "IOPortTransportStateCC") != 0 {
+                    let cc = connectionState(from: properties)
+                    port.ccActive = cc.active
+                    port.authentication = cc.authentication
+                }
                 if properties["Tunneled"] as? Bool == true { port.isTunnelled = true }
                 if properties["TRM_TransportRestricted"] as? Bool == true { port.isRestricted = true }
                 if let role = properties["DataRoleDescription"] as? String, !role.isEmpty {
@@ -573,6 +603,22 @@ enum PortMonitor {
             }
             collectTransportState(under: child, into: &port, depth: depth + 1)
         }
+    }
+
+    /// What the CC line says about the socket, from one `IOPortTransportStateCC`
+    /// node. Split from the walk so a recorded node replays through it.
+    ///
+    /// `AuthenticationStatusDescription` reads "Idle" on a port nothing has
+    /// ever tried to authenticate on, which is not a state worth a line, so it
+    /// is dropped here rather than in the view. Same treatment `authorization`
+    /// already gives "Not Required".
+    static func connectionState(
+        from properties: [String: Any]
+    ) -> (active: Bool, authentication: String?) {
+        let active = properties["Active"] as? Bool ?? false
+        var authentication = (properties["AuthenticationStatusDescription"] as? String)?.nilIfEmpty
+        if authentication == "Idle" { authentication = nil }
+        return (active, authentication)
     }
 
     /// Hunts for the PD Discover Identity nodes, which hang under the port's
