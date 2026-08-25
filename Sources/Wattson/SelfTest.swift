@@ -38,6 +38,7 @@ enum SelfTest {
         checks += displayLinkChecks()
         checks += emarkerSilenceChecks()
         checks += tunnelChecks()
+        checks += staleInputChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
         checks += headlineChecks()
@@ -968,6 +969,68 @@ enum SelfTest {
         car.dataRole = "Host"
         checks.append(Check(name: "tunnel: the ordinary host role is not remarked on",
                             passed: !car.isDeviceRole))
+        return checks
+    }
+
+    // MARK: - The input rail in the seconds after plugging in
+
+    private static func staleInputChecks() -> [Check] {
+        var checks: [Check] = []
+
+        // A Ugreen Nexode power bank, in the window where the SMC had seen the
+        // power arrive and the registry had not: PDTR reporting 9.80 W against
+        // a PowerTelemetryData copy still describing an unplugged machine.
+        var fresh = PowerSnapshot()
+        fresh.externalConnected = true
+        fresh.inputWatts = 9.80
+        fresh.inputVolts = 0
+        fresh.inputAmps = 0
+        fresh.profiles = [
+            PDProfile(id: 0, volts: 5, amps: 3), PDProfile(id: 1, volts: 9, amps: 3),
+            PDProfile(id: 2, volts: 12, amps: 3), PDProfile(id: 3, volts: 15, amps: 3),
+            PDProfile(id: 4, volts: 20, amps: 5),
+        ]
+        fresh.negotiatedProfile = 4
+        checks.append(Check(name: "input: the negotiated contract's own voltage is found",
+                            passed: fresh.negotiatedVolts == 20,
+                            detail: "got \(show(fresh.negotiatedVolts))"))
+
+        let corrected = PowerMonitor.correctStaleInput(fresh)
+        checks.append(Check(
+            name: "input: a stale zero rail is filled in from the contract",
+            passed: corrected.inputVolts == 20,
+            detail: "got \(show(corrected.inputVolts)) V"))
+        checks.append(Check(
+            name: "input: the current follows from the wattage the SMC measured",
+            passed: corrected.inputAmps.map { abs($0 - 9.80 / 20) < 0.0001 } ?? false,
+            detail: "got \(show(corrected.inputAmps)) A"))
+
+        // A rail that is actually reading must not be overwritten. A supply
+        // sagging under load is a fact worth seeing, and the contract voltage
+        // is exactly what would hide it.
+        var measured = fresh
+        measured.inputVolts = 19.2
+        measured.inputAmps = 0.5
+        let untouched = PowerMonitor.correctStaleInput(measured)
+        checks.append(Check(name: "input: a real measurement is left alone, sag included",
+                            passed: untouched.inputVolts == 19.2 && untouched.inputAmps == 0.5,
+                            detail: "got \(show(untouched.inputVolts)) V"))
+
+        // Nothing arriving is not a stale reading, it is the answer.
+        var idle = fresh
+        idle.inputWatts = 0
+        checks.append(Check(name: "input: an idle port is not given a contract voltage",
+                            passed: PowerMonitor.correctStaleInput(idle).inputVolts == 0))
+        // Power arriving with no contract to consult stays as it was found.
+        var noContract = fresh
+        noContract.negotiatedProfile = nil
+        checks.append(Check(name: "input: without a contract nothing is invented",
+                            passed: PowerMonitor.correctStaleInput(noContract).inputVolts == 0))
+        // An index naming a profile that is not in the menu is not a voltage.
+        var missing = fresh
+        missing.negotiatedProfile = 9
+        checks.append(Check(name: "input: an index with no profile behind it is not a voltage",
+                            passed: PowerMonitor.correctStaleInput(missing).inputVolts == 0))
         return checks
     }
 

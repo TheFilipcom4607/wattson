@@ -200,6 +200,16 @@ struct PowerSnapshot {
     var profiles: [PDProfile] = []
     var negotiatedProfile: Int?
 
+    /// The voltage the PD contract actually settled on, when there is one.
+    ///
+    /// This is a statement about the link rather than a measurement of it,
+    /// which is what makes it usable while the measured copy is stale: the
+    /// contract does not drift between samples the way the rails do.
+    var negotiatedVolts: Double? {
+        guard let index = negotiatedProfile else { return nil }
+        return profiles.first { $0.id == index }?.volts
+    }
+
     var hasAdapter: Bool { externalConnected && adapterWatts != nil }
 
     /// Signed battery flow: negative is leaving the battery, positive is going in.
@@ -391,6 +401,25 @@ enum PowerMonitor {
             }
         }
 
+        // The measured input rail is part of the same 10-30 s stale copy as the
+        // rest of PowerTelemetryData, and in the seconds after a charger is
+        // plugged in it is still describing the unplugged state — zero volts,
+        // zero amps — while the SMC has already seen the power arrive. That put
+        // "Input: 9.80 W" directly above "Input rail: 0.00 V / 0.000 A" on the
+        // panel, at the one moment somebody is definitely looking at it.
+        //
+        // The correction above only ever recomputed the current, and only where
+        // there was already a plausible voltage to divide by, so a stale zero
+        // fell through both of its branches untouched.
+        //
+        // The negotiated contract answers it. It is the voltage the link
+        // settled on, it is published as soon as the contract exists, and it
+        // does not drift between samples. Applied only to replace a reading
+        // that is missing or implausible, never to overwrite a real one: a
+        // measured rail sagging under load is a fact worth seeing, and the
+        // contract voltage would quietly paper over exactly that.
+        snapshot = correctStaleInput(snapshot)
+
         return snapshot
     }
 
@@ -400,6 +429,20 @@ enum PowerMonitor {
     /// Split from `read()` so recorded captures can be replayed through it —
     /// see `--selftest`. Capacity and cycle figures sit at the top level;
     /// the temperature extremes are inside the gauge's own `BatteryData`.
+    /// Replaces an input rail that has not caught up yet with the contract the
+    /// link settled on. Pure, so `--selftest` drives exactly this. See the call
+    /// site for why the measured copy cannot be trusted in that window.
+    static func correctStaleInput(_ snapshot: PowerSnapshot) -> PowerSnapshot {
+        guard let watts = snapshot.inputWatts, watts > 0.05,
+              (snapshot.inputVolts ?? 0) <= 1,
+              let contract = snapshot.negotiatedVolts, contract > 1
+        else { return snapshot }
+        var corrected = snapshot
+        corrected.inputVolts = contract
+        corrected.inputAmps = watts / contract
+        return corrected
+    }
+
     static func health(from properties: [String: Any]) -> BatteryHealth {
         var health = BatteryHealth()
         health.cycleCount = number(properties["CycleCount"]).map { Int($0) }
