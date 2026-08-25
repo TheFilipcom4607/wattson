@@ -1024,16 +1024,20 @@ enum SelfTest {
                             passed: hold.summary(externalConnected: false, isCharging: false) == nil))
         checks.append(Check(name: "charging: says nothing while charging normally",
                             passed: hold.summary(externalConnected: true, isCharging: true) == nil))
-        // Attached, not charging, setpoint zero: a fact, and worth saying.
+        // Attached, not charging, setpoint zero — and nothing to say about it.
+        // The capture behind `hold` is a pack sitting at an 80% charge limit,
+        // which is the ordinary state of a Mac left plugged in, and the panel
+        // already reads "holding" beside the percentage. Naming a cause needs a
+        // flag macOS does not publish; see `ChargingHold.summary`.
         checks.append(Check(
-            name: "charging: a zero setpoint on a charger is explained",
-            passed: hold.summary(externalConnected: true, isCharging: false)
-                == "The charger has set its charge current to zero."))
+            name: "charging: a zero setpoint alone explains nothing",
+            passed: hold.summary(externalConnected: true, isCharging: false) == nil,
+            detail: "got \(hold.summary(externalConnected: true, isCharging: false) ?? "nil")"))
 
         var hot = PowerMonitor.chargingHold(from: batteryCapture)
         hot.secondsThermallyLimited = 90
         checks.append(Check(
-            name: "charging: heat outranks the zero setpoint as an explanation",
+            name: "charging: heat is still named when the setpoint is zero",
             passed: hot.summary(externalConnected: true, isCharging: false)
                 == "Charging is being limited by temperature."))
         return checks

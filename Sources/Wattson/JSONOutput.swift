@@ -124,18 +124,23 @@ enum JSONOutput {
             ])
         }
 
+        // Emitted whenever the charger published anything, rather than only
+        // when there is a sentence to go with it. This was gated on `summary`,
+        // which was fine while a zero setpoint produced one — and became a way
+        // of discarding evidence the moment it stopped. A pack held at a charge
+        // limit is exactly the state whose `notChargingReasonRaw` a decode
+        // would have to be built from, and it is the state with nothing to say.
         let hold = power.chargingHold
-        if let summary = hold.summary(externalConnected: power.externalConnected,
-                                      isCharging: power.isCharging) {
-            object["chargingHold"] = compact([
-                "summary": summary,
-                "chargingCurrentMA": hold.chargingCurrentMA,
-                "chargingVoltageMV": hold.chargingVoltageMV,
-                "secondsThermallyLimited": hold.secondsThermallyLimited,
-                // Carried raw and unlabelled on purpose — see `ChargingHold`.
-                "notChargingReasonRaw": hold.notChargingReason,
-            ])
-        }
+        let holdObject = compact([
+            "summary": hold.summary(externalConnected: power.externalConnected,
+                                    isCharging: power.isCharging),
+            "chargingCurrentMA": hold.chargingCurrentMA,
+            "chargingVoltageMV": hold.chargingVoltageMV,
+            "secondsThermallyLimited": hold.secondsThermallyLimited,
+            // Carried raw and unlabelled on purpose — see `ChargingHold`.
+            "notChargingReasonRaw": hold.notChargingReason,
+        ])
+        if !holdObject.isEmpty { object["chargingHold"] = holdObject }
         return object
     }
 

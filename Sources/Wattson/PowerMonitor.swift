@@ -88,11 +88,17 @@ struct BatteryHealth: Hashable {
 /// this app refuses to do elsewhere, so the raw value is carried for the
 /// diagnostics pane and nothing is claimed about it.
 ///
+/// Observed values, for whenever there are enough of them to be a table:
+/// `128` on battery with nothing attached, and `0x01000000` at an 80% hold
+/// with a charger attached and `ChargingCurrent` at zero — `BatteryData`'s
+/// own `Flags` reads `0x01000001` at the same moment, so bit 24 means
+/// something to both. Two readings are still not a table.
+///
 /// The fields that *are* stated in words are the ones whose names say what
 /// they hold: a thermally-limited duration, an inhibit reason, and the
-/// charger's own current setpoint. A setpoint of zero while a charger is
-/// attached is the charger having decided not to charge, which is a fact
-/// rather than an inference.
+/// charging circuit's current setpoint. Note whose setpoint that is — it
+/// comes from `ChargerData` inside `AppleSmartBattery`, so it belongs to this
+/// Mac's own charging IC, not to the brick on the other end of the cable.
 struct ChargingHold: Hashable {
     /// Milliamps the charger intends to push. Zero means it has stopped.
     var chargingCurrentMA: Double?
@@ -113,7 +119,22 @@ struct ChargingHold: Hashable {
         guard externalConnected, !isCharging else { return nil }
         if isInhibited { return "The charger is holding charge back." }
         if isThermallyLimited { return "Charging is being limited by temperature." }
-        if chargingCurrentMA == 0 { return "The charger has set its charge current to zero." }
+        // A zero setpoint deliberately says nothing.
+        //
+        // It used to read "The charger has set its charge current to zero",
+        // which was wrong twice over: the setpoint comes from `ChargerData`
+        // inside `AppleSmartBattery`, so it belongs to this Mac's own charging
+        // IC and not to the brick, and a setpoint of zero is not evidence of a
+        // decision by anything that can be named. Rewording it to attribute
+        // nothing left a sentence that only restated the "holding" already
+        // beside the percentage, on the commonest reading there is: a pack
+        // sitting at a charge limit, doing exactly what it was told to.
+        //
+        // Naming the real cause needs a flag macOS does not publish. Searched
+        // AppleSmartBattery's whole property set, IOPMPowerSource, BatteryData,
+        // com.apple.PowerManagement and com.apple.smartcharging: there is no
+        // charge-limit key anywhere readable. The one candidate is bit 24 of
+        // `notChargingReason`, and one observation of it is not a decode.
         return nil
     }
 }
