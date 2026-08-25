@@ -13,6 +13,19 @@ import IOKit.usb.IOUSBLib
 /// `UsbBillboardCurrentMode` off the registry, but that is only published for
 /// a device macOS itself recognised as a Billboard, and it says which mode
 /// exists rather than what happened to it.
+///
+/// The layout came from the specification and no capture, because nothing
+/// carrying one had ever been attached to this machine. A Lenovo dock settled
+/// it on 2026-08-25: a VIA Labs billboard (2109:0102) answered with 81 bytes
+/// across three capabilities — a container ID, a Billboard capability of
+/// exactly 48 bytes, and a Billboard Alt Mode capability — and every offset
+/// guessed from the specification landed. bNumberOfAlternateModes reads 1 and
+/// the capability is 44 + 4 x 1 bytes long, the mode's SVID at offset 44 is
+/// 0xFF01, and its two bits in bmConfigured read 3.
+///
+/// So the fixture proves the structure and the "succeeded" state. It does not
+/// prove the failure states: that dock's DisplayPort works, which is why the
+/// app correctly says nothing about it. A mode reading 2 is still unobserved.
 struct BillboardMode: Hashable {
     /// Standard or Vendor ID. 0xFF01 is DisplayPort.
     let svid: Int
@@ -115,7 +128,11 @@ struct SpeedCapability: Hashable {
 ///
 /// Verified on hardware: an iPhone 16 Pro answers with 70 bytes across four
 /// capabilities and a Ugreen NVMe enclosure with 42 bytes across three, read
-/// while both were mounted and in use, with no interruption to either.
+/// while both were mounted and in use, with no interruption to either. A
+/// Lenovo dock later answered for all thirteen devices behind it at once,
+/// including three that returned nothing — a hub, a wireless receiver and a
+/// monitor controller, all of them plain USB 2.0 devices with no BOS
+/// descriptor to give, which is the ordinary case and not a failure.
 enum BOSDescriptor {
 
     // MARK: - Parsing

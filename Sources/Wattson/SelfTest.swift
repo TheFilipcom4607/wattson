@@ -260,8 +260,55 @@ enum SelfTest {
         return [5, 0x0F, UInt8(total & 0xFF), UInt8(total >> 8), 1] + capability
     }
 
+    /// The real one: a VIA Labs billboard (2109:0102) inside a Lenovo dock,
+    /// captured 2026-08-25. Three capabilities — a container ID, the Billboard
+    /// capability, and a Billboard Alt Mode capability the parse steps over —
+    /// with one alternate mode that entered successfully.
+    ///
+    /// This is the fixture that proves the offsets, and it does so the way the
+    /// identity fixtures do rather than by remembering a number: the device
+    /// publishes "DisplayPort" separately as `UsbBillboardCurrentMode` in the
+    /// IORegistry, and the SVID decoded out of the descriptor has to come out
+    /// as 0xFF01, which is the same statement by a route that shares no code.
+    private static let lenovoDockBillboardBOS: [UInt8] = [
+        0x05, 0x0f, 0x51, 0x00, 0x03, 0x14, 0x10, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x30, 0x10, 0x0d, 0x04, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0x01, 0xff, 0x00,
+        0x04, 0x08, 0x10, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]
+
     private static func billboardChecks() -> [Check] {
         var checks: [Check] = []
+
+        guard let real = BOSDescriptor.billboard(in: lenovoDockBillboardBOS) else {
+            checks.append(Check(name: "billboard: the dock's own descriptor decodes",
+                                passed: false, detail: "parse returned nil"))
+            return checks
+        }
+        checks.append(Check(
+            name: "billboard: the dock's own descriptor decodes to one mode",
+            passed: real.modes.count == 1,
+            detail: "got \(real.modes.count)"))
+        // The registry publishes "DisplayPort" for this device by a route that
+        // shares no code with the byte parse. 0xFF01 is that same statement.
+        checks.append(Check(
+            name: "billboard: the SVID matches what the registry calls the mode",
+            passed: real.modes.first?.svid == 0xFF01
+                && real.modes.first?.svidName == "DisplayPort",
+            detail: "got \(real.modes.first.map { String(format: "0x%04X", $0.svid) } ?? "nil")"))
+        // The dock's DisplayPort works, so the mode has to read as entered and
+        // the app has to stay quiet about it.
+        checks.append(Check(
+            name: "billboard: a working dock reports its mode entered, and says nothing",
+            passed: real.modes.first?.state == .succeeded && real.summary == nil,
+            detail: "state \(String(describing: real.modes.first?.state)), summary \(real.summary ?? "nil")"))
+        // A Billboard Alt Mode capability follows the Billboard one here, so
+        // the walk has to stop at the right capability rather than the last.
+        checks.append(Check(name: "billboard: the trailing alt-mode capability is not mistaken for it",
+                            passed: real.modes.count == 1 && !real.lacksPowerDelivery))
         let bos = billboardDescriptor(modes: [
             (svid: 0xFF01, index: 0, state: BillboardMode.State.failed.rawValue),
             (svid: 0x8087, index: 1, state: BillboardMode.State.succeeded.rawValue),
