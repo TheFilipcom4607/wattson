@@ -154,6 +154,10 @@ enum JSONOutput {
             "transportsActive": port.transportsActive.isEmpty ? nil : port.transportsActive,
             "transportsSupported": port.transportsSupported.isEmpty ? nil : port.transportsSupported,
             "dataRole": port.dataRole,
+            // What is riding inside the Thunderbolt link, where there is one.
+            "tunnels": port.tunnels.map {
+                ["name": $0.name, "index": $0.index, "active": $0.isActive] as [String: Any]
+            },
             "tunnelled": port.isTunnelled,
             "restricted": port.isRestricted,
             "authorization": port.authorization,

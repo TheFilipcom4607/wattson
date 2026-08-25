@@ -37,6 +37,7 @@ enum SelfTest {
         checks += billboardChecks()
         checks += displayLinkChecks()
         checks += emarkerSilenceChecks()
+        checks += tunnelChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
         checks += headlineChecks()
@@ -908,6 +909,65 @@ enum SelfTest {
         checks.append(Check(name: "e-marker: a cable that answered is described from its answer",
                             passed: answered.cableWiringSummary.hasPrefix("Passive · "),
                             detail: answered.cableWiringSummary))
+        return checks
+    }
+
+    // MARK: - What rides inside a Thunderbolt link
+
+    private static func tunnelChecks() -> [Check] {
+        var checks: [Check] = []
+
+        // The Amazon Basics dock, as captured: one cable carrying USB3, two
+        // DisplayPort streams for two monitors, and PCIe present but not up.
+        var dock = PortInfo(name: "USB-C", kind: .usbC, number: 2, isConnected: true)
+        dock.transportsActive = ["CC", "USB2", "CIO"]
+        dock.tunnels = [
+            PortTunnel(name: "DisplayPort", index: 0, isActive: true),
+            PortTunnel(name: "DisplayPort", index: 1, isActive: true),
+            PortTunnel(name: "PCIe", index: 0, isActive: false),
+            PortTunnel(name: "USB3", index: 0, isActive: true),
+        ]
+        let summary = dock.tunnelSummary ?? ""
+        // The port's own transport list stops at CIO, which is the whole reason
+        // this exists: two monitors are running and it never mentions a display.
+        checks.append(Check(
+            name: "tunnel: the port's own transport list says nothing about the displays",
+            passed: !dock.transportsActive.contains("DisplayPort")))
+        checks.append(Check(
+            name: "tunnel: the running protocols are named, displays numbered apart",
+            passed: summary.contains("DisplayPort 0") && summary.contains("DisplayPort 1")
+                && summary.contains("USB3"),
+            detail: summary))
+        // A dock whose PCIe never comes up is the complaint this answers, so an
+        // idle tunnel has to be named rather than quietly dropped.
+        checks.append(Check(
+            name: "tunnel: a tunnel that is offered but not running is still named",
+            passed: summary.contains("PCIe") && summary.contains("not running"),
+            detail: summary))
+        // Only one PCIe, so numbering it would be noise.
+        checks.append(Check(name: "tunnel: a lone tunnel is not given an index",
+                            passed: !summary.contains("PCIe 0"),
+                            detail: summary))
+
+        var none = dock
+        none.tunnels = []
+        checks.append(Check(name: "tunnel: a port with no tunnels says nothing",
+                            passed: none.tunnelSummary == nil))
+        var allIdle = dock
+        allIdle.tunnels = [PortTunnel(name: "PCIe", index: 0, isActive: false)]
+        checks.append(Check(name: "tunnel: a link with nothing running says so",
+                            passed: allIdle.tunnelSummary == "PCIe offered, none running",
+                            detail: allIdle.tunnelSummary ?? "nil"))
+
+        // The Mac is the host almost always, and the almost is what is worth
+        // printing: in the car it was the device.
+        var car = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
+        car.dataRole = "Device"
+        checks.append(Check(name: "tunnel: the Mac being the device end is noticed",
+                            passed: car.isDeviceRole))
+        car.dataRole = "Host"
+        checks.append(Check(name: "tunnel: the ordinary host role is not remarked on",
+                            passed: !car.isDeviceRole))
         return checks
     }
 

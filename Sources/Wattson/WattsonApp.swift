@@ -190,6 +190,12 @@ enum Entry {
                 print("   Carrying:    \(port.activeSummary)")
                 print("   Cable:       \(port.cableWiringSummary)")
                 print("   Current:     \(port.currentRating)")
+                if let tunnels = port.tunnelSummary {
+                    print("   Inside it:   \(tunnels)")
+                }
+                if port.isDeviceRole {
+                    print("   Data role:   this Mac is the device; the far end is the host")
+                }
                 if let silence = port.emarkerSilence {
                     print("   Cable:       \(silence)")
                 }

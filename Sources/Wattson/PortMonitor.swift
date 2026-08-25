@@ -234,6 +234,33 @@ struct LiquidDetection: Hashable {
     }
 }
 
+/// One protocol riding inside a Thunderbolt link.
+///
+/// A Thunderbolt cable is not carrying "Thunderbolt" in any useful sense — it
+/// is carrying a bundle of other protocols tunnelled through it, and which ones
+/// are actually up is the difference between a dock that works and a dock whose
+/// ethernet is dead. Nothing else on the Mac shows this: the port's own
+/// `TransportsActive` lists CIO and stops there, because from the port's point
+/// of view the tunnels are somebody else's business.
+///
+/// An Amazon Basics Thunderbolt 4 dock made the case for it. One cable, and
+/// underneath it USB3 up, two DisplayPort streams up for two monitors, and PCIe
+/// present but not running — which the panel summarised as the single word
+/// "Thunderbolt".
+struct PortTunnel: Hashable {
+    /// "USB3", "DisplayPort", "PCIe", as the controller names it.
+    let name: String
+    /// Which stream of that protocol; two monitors give DisplayPort 0 and 1.
+    let index: Int
+    /// Established, as opposed to merely offered by the link.
+    let isActive: Bool
+
+    /// "DisplayPort 1" where there is more than one, "PCIe" where there is not.
+    func label(amongIndices count: Int) -> String {
+        count > 1 ? "\(name) \(index)" : name
+    }
+}
+
 /// The state of one physical port on the Mac.
 struct PortInfo: Identifiable, Hashable {
     /// Port numbers repeat across types — MagSafe is also port 1 — so the kind
@@ -292,6 +319,28 @@ struct PortInfo: Identifiable, Hashable {
     /// True when a transport is carried inside USB4/Thunderbolt rather than
     /// running natively on its own wires.
     var isTunnelled = false
+    /// What is actually riding inside the Thunderbolt link, where there is one.
+    var tunnels: [PortTunnel] = []
+
+    /// "USB3, DisplayPort 0, DisplayPort 1 (PCIe offered, not running)".
+    ///
+    /// The idle ones are named rather than dropped: a dock whose PCIe never
+    /// comes up is the exact complaint this is here to answer, and a list that
+    /// silently omits it looks like a link with nothing wrong.
+    var tunnelSummary: String? {
+        guard !tunnels.isEmpty else { return nil }
+        var counts: [String: Int] = [:]
+        for tunnel in tunnels { counts[tunnel.name, default: 0] += 1 }
+        func label(_ tunnel: PortTunnel) -> String {
+            tunnel.label(amongIndices: counts[tunnel.name] ?? 1)
+        }
+        let running = tunnels.filter(\.isActive).map(label)
+        let idle = tunnels.filter { !$0.isActive }.map(label)
+        if running.isEmpty { return idle.joined(separator: ", ") + " offered, none running" }
+        var text = running.joined(separator: ", ")
+        if !idle.isEmpty { text += " (\(idle.joined(separator: ", ")) offered, not running)" }
+        return text
+    }
     /// macOS's own accessory policy, when it has something to say. The panel is
     /// otherwise unable to explain a device that enumerates and then does
     /// nothing because Privacy & Security declined it.
@@ -507,6 +556,14 @@ struct PortInfo: Identifiable, Hashable {
         return parts.joined(separator: " · ")
     }
 
+    /// This Mac is the device end of the link and something else is the host.
+    ///
+    /// Worth saying because it is the one that surprises. A Mac is the host
+    /// almost always, and the almost is doing real work: plugged into a car's
+    /// USB-C port the Mac took the device role and the car ran the bus, which
+    /// is a different machine from the one the panel otherwise describes.
+    var isDeviceRole: Bool { dataRole == "Device" }
+
     /// Why the cable said nothing about itself, where that is knowable.
     ///
     /// A cable's e-marker runs off VCONN and answers a Discover Identity
@@ -707,6 +764,7 @@ enum PortMonitor {
             collectIdentities(under: service, into: &port, depth: 0)
             collectLiquidDetection(under: service, into: &port, depth: 0)
             collectTransportState(under: service, into: &port, depth: 0)
+            port.tunnels.sort { ($0.name, $0.index) < ($1.name, $1.index) }
             ports.append(port)
         }
 
@@ -774,7 +832,10 @@ enum PortMonitor {
     /// while the data transports are exactly where macOS's accessory policy
     /// shows up. So take the most specific answer any transport gives rather
     /// than whichever happens to be enumerated last.
-    private static func collectTransportState(under service: io_registry_entry_t, into port: inout PortInfo, depth: Int) {
+    private static func collectTransportState(
+        under service: io_registry_entry_t, into port: inout PortInfo, depth: Int,
+        insideCIO: Bool = false
+    ) {
         guard depth < 3 else { return }
         var iterator: io_iterator_t = 0
         guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS else { return }
@@ -791,6 +852,17 @@ enum PortMonitor {
                     port.authentication = cc.authentication
                 }
                 if properties["Tunneled"] as? Bool == true { port.isTunnelled = true }
+                // Position in the tree, not the `Tunneled` flag, is what makes
+                // something a tunnel: these nodes hang below the port's CIO
+                // node precisely because they are riding inside it. The flag
+                // agrees where it is published and is not always.
+                if insideCIO, let name = (properties["TransportTypeDescription"] as? String)?.nilIfEmpty {
+                    port.tunnels.append(PortTunnel(
+                        name: name,
+                        index: (properties["Index"] as? NSNumber)?.intValue ?? 0,
+                        isActive: properties["Active"] as? Bool ?? false
+                    ))
+                }
                 if properties["TRM_TransportRestricted"] as? Bool == true { port.isRestricted = true }
                 if let role = properties["DataRoleDescription"] as? String, !role.isEmpty {
                     port.dataRole = role
@@ -808,7 +880,9 @@ enum PortMonitor {
                     port.authorization = status
                 }
             }
-            collectTransportState(under: child, into: &port, depth: depth + 1)
+            let isCIO = insideCIO
+                || (properties(of: child)?["TransportTypeDescription"] as? String) == "CIO"
+            collectTransportState(under: child, into: &port, depth: depth + 1, insideCIO: isCIO)
         }
     }
 
