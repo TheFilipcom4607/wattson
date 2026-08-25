@@ -34,15 +34,22 @@ struct ConnectionEvent: Codable, Identifiable, Hashable {
             : Self.olderFormat.string(from: at)
     }
 
+    // Styles rather than patterns. The patterns these replace were "HH:mm" and
+    // "dd.MM.yyyy, HH:mm", which forced a 24-hour clock and a day-first date on
+    // everybody — so an American user with a 12-hour clock read 21:40 for a
+    // quarter to ten in the evening, and 03.11.2026 for the eleventh of March.
+    // A style asks the user's own locale what those mean.
     private static let todayFormat: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
         return formatter
     }()
 
     private static let olderFormat: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "dd.MM.yyyy, HH:mm"
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
         return formatter
     }()
 }
