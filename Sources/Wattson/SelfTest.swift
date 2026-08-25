@@ -36,6 +36,7 @@ enum SelfTest {
         checks += connectionStateChecks()
         checks += billboardChecks()
         checks += displayLinkChecks()
+        checks += emarkerSilenceChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
         checks += headlineChecks()
@@ -848,6 +849,65 @@ enum SelfTest {
         checks.append(Check(
             name: "display link: a node naming no port is refused",
             passed: DisplayLinkMonitor.link(from: ["Index": NSNumber(value: 0)]) == nil))
+        return checks
+    }
+
+    // MARK: - Why a cable said nothing
+
+    private static func emarkerSilenceChecks() -> [Check] {
+        var checks: [Check] = []
+
+        // The BMW's rear USB-C port, as captured: USB 3 data running, power
+        // settled on Brick ID and Type-C at 5 V and 3 A, no SOP' node anywhere
+        // and three SOP nodes with empty metadata. The cable in it has an
+        // e-marker that reads perfectly well on a PD charger.
+        var car = PortInfo(name: "USB-C", kind: .usbC, number: 1, isConnected: true)
+        car.transportsActive = ["CC", "USB3", "USB2"]
+        car.powerSourceKind = "Brick ID"
+        car.negotiated = PowerOption(milliamps: 3000, milliwatts: 15000)
+        car.dataRole = "Device"
+        checks.append(Check(
+            name: "e-marker: a link that never negotiated PD explains its own silence",
+            passed: car.emarkerSilence?.contains("Brick ID") == true,
+            detail: car.emarkerSilence ?? "nil"))
+        // Says nothing was asked. Must not say the cable has a chip.
+        checks.append(Check(
+            name: "e-marker: the explanation claims nothing about the cable itself",
+            passed: {
+                guard let text = car.emarkerSilence?.lowercased() else { return false }
+                return !text.contains("has an e-marker") && !text.contains("is e-marked")
+            }()))
+        // "Passive" was being printed off a port default that nothing had
+        // tested, which reads as a finding about the cable.
+        checks.append(Check(
+            name: "e-marker: an uninterrogated cable is not called passive",
+            passed: car.cableWiringSummary == "Not interrogated",
+            detail: car.cableWiringSummary))
+
+        // A PD contract that produced no e-marker is a different statement: the
+        // cable could have been asked. Nothing is explained away there.
+        var pd = car
+        pd.powerSourceKind = "USB-PD"
+        checks.append(Check(name: "e-marker: silence under a PD contract is left unexplained",
+                            passed: pd.emarkerSilence == nil))
+        checks.append(Check(name: "e-marker: a cable under PD is described as passive again",
+                            passed: pd.cableWiringSummary == "Passive",
+                            detail: pd.cableWiringSummary))
+
+        // An empty port has no cable to have asked anything of.
+        var empty = car
+        empty.isConnected = false
+        checks.append(Check(name: "e-marker: an empty port explains nothing",
+                            passed: empty.emarkerSilence == nil))
+
+        // And a cable that did answer needs no explanation for not answering.
+        var answered = car
+        answered.emarker = cable(speedRung: 0b010)
+        checks.append(Check(name: "e-marker: a cable that answered is not excused",
+                            passed: answered.emarkerSilence == nil))
+        checks.append(Check(name: "e-marker: a cable that answered is described from its answer",
+                            passed: answered.cableWiringSummary.hasPrefix("Passive · "),
+                            detail: answered.cableWiringSummary))
         return checks
     }
 

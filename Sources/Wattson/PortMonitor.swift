@@ -480,7 +480,21 @@ struct PortInfo: Identifiable, Hashable {
     /// + power only" in the other. Only what the hardware states outright is
     /// reported now.
     var cableWiringSummary: String {
-        var parts = [isOpticalCable ? "Optical" : (isActiveCable ? "Active" : "Passive")]
+        // "Passive" is only a finding once something has interrogated the
+        // cable. Where nothing has, the port reports `ActiveCable = No` because
+        // that is its default, not because it asked and was told — and printing
+        // "Passive" off the back of that states a fact about the cable that
+        // nobody established. See `emarkerSilence`.
+        var parts: [String] = []
+        if isOpticalCable {
+            parts.append("Optical")
+        } else if isActiveCable {
+            parts.append("Active")
+        } else if emarker != nil || hasPDContract {
+            parts.append("Passive")
+        } else {
+            parts.append("Not interrogated")
+        }
         if let emarker {
             if emarker.contentsWithheld {
                 parts.append("has an e-marker")
@@ -491,6 +505,32 @@ struct PortInfo: Identifiable, Hashable {
             }
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Why the cable said nothing about itself, where that is knowable.
+    ///
+    /// A cable's e-marker runs off VCONN and answers a Discover Identity
+    /// message. Nothing issues one outside a USB-PD negotiation, so on a port
+    /// that settled its power by Brick ID or plain Type-C current advertising,
+    /// the chip is never asked and an e-marked cable is indistinguishable from
+    /// a bare one.
+    ///
+    /// The car park where this turned up: a BMW's USB-C port ran the whole
+    /// connection on Brick ID and Type-C at 5 V and 3 A, with USB 3 data
+    /// active, and produced no SOP' node and three SOP nodes with empty
+    /// metadata. The cable in it does have an e-marker — it reads fine on a PD
+    /// charger — and the panel showed a blank where the chip should be, which
+    /// reads as a cheap cable rather than as a question nobody asked.
+    ///
+    /// Stated one way only. That no negotiation happened is certain and is all
+    /// this says. It is emphatically not evidence that the cable *has* a chip:
+    /// an unmarked cable is silent here for the ordinary reason.
+    var emarkerSilence: String? {
+        guard isConnected, emarker == nil, !hasPDContract else { return nil }
+        let mechanism = powerSourceKind.map { "on \($0)" } ?? "without a PD contract"
+        return "Nothing has asked this cable what it is — the link settled \(mechanism), "
+            + "and only a USB-PD negotiation interrogates the chip in the plug. "
+            + "An e-marked cable looks the same as a plain one here."
     }
 
     /// The fastest thing known to have crossed this cable, or what its chip

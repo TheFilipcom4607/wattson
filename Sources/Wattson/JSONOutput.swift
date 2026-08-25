@@ -214,6 +214,8 @@ enum JSONOutput {
                 "refreshHz": display.refreshHz,
                 "minimumGbpsUncompressed": display.minimumGbps,
                 "compression": port.displayCompression,
+                // Why the cable published nothing, where the reason is knowable.
+                "emarkerSilence": port.emarkerSilence,
                 // The controller's own account: which displays arrived on this
                 // port, what each link came up at, and the mode where a serial
                 // matched one.
