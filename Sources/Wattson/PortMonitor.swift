@@ -57,21 +57,51 @@ struct CableEMarker: Hashable {
     /// decides which of the two a cable is claiming.
     var usbSpeed: String? { speedClaim?.label }
 
-    /// The same claim as a number, for anything comparing it against a link
-    /// that actually came up rather than printing it.
-    var usbGbps: Double? { speedClaim?.gbps }
+    /// What the cable does as USB 3, which is one lane pair.
+    var usbGbps: Double? { speedClaim?.usb3Gbps }
 
-    /// One switch behind both, so the label and the figure cannot drift apart.
-    private var speedClaim: (label: String, gbps: Double)? {
+    /// The most the cable claims under any protocol, for comparing against a
+    /// link that actually came up. A cable's two lane pairs carry USB 3 on one
+    /// and USB4 across both, so these are different numbers on the same wires.
+    var maximumGbps: Double? { speedClaim.map { max($0.usb3Gbps, $0.usb4Gbps ?? 0) } }
+
+    /// One switch behind all three, so the label and the figures cannot drift.
+    ///
+    /// The speed field is not a single number, and reading it as one understated
+    /// a cable on this desk. A Lenovo ThinkVision's bundled cable has "USB4
+    /// 20Gbps 240W" printed on the jacket and encodes 010b, which this used to
+    /// render as "USB 3.2 Gen 2 — 10 Gbps" flat.
+    ///
+    /// The wattage is what makes that safe to correct rather than merely
+    /// suspicious. The same VDO's current and voltage fields decode to exactly
+    /// the 240 W the jacket claims, so the decode is landing on the right bits;
+    /// it is the meaning of one field that was half-read. And there is nowhere
+    /// else for 20 Gbps to live: 001b is 5, 011b is 40 at this spec revision,
+    /// and a cable marked 20 has to encode as something. 010b covering both USB
+    /// 3.2 Gen2 on one lane pair and USB4 Gen2 across both is the only reading
+    /// that leaves the encoding able to express the cable in your hand.
+    ///
+    /// Gated on the responder's own spec revision, the same way 011b already
+    /// is: USB4 did not exist to be claimed under PD 3.0, so the second
+    /// interpretation only applies from PD 3.1 on.
+    ///
+    /// Both figures are stated rather than one being picked. A cable that does
+    /// 10 as USB 3 and 20 as USB4 is not a 10 Gbps cable and not a 20 Gbps
+    /// cable; it is that cable, and saying either number alone is how this went
+    /// wrong the first time.
+    private var speedClaim: (label: String, usb3Gbps: Double, usb4Gbps: Double?)? {
         guard let vdo = cableVDO else { return nil }
+        let knowsUSB4 = (specificationRevision ?? 0) >= 3
         switch vdo & 0b111 {
-        case 0b000: return ("USB 2.0 — 480 Mbps", 0.48)
-        case 0b001: return ("USB 3.2 Gen 1 — 5 Gbps", 5)
-        case 0b010: return ("USB 3.2 Gen 2 — 10 Gbps", 10)
-        case 0b011: return (specificationRevision ?? 0) >= 3
-            ? ("USB4 Gen 3 — 40 Gbps", 40)
-            : ("USB4 Gen 2×2 — 20 Gbps", 20)
-        case 0b100: return ("USB4 Gen 4 — 80 Gbps", 80)
+        case 0b000: return ("USB 2.0 — 480 Mbps", 0.48, nil)
+        case 0b001: return ("USB 3.2 Gen 1 — 5 Gbps", 5, nil)
+        case 0b010: return knowsUSB4
+            ? ("USB 3.2 Gen 2 — 10 Gbps, or 20 Gbps as USB4 Gen 2", 10, 20)
+            : ("USB 3.2 Gen 2 — 10 Gbps", 10, nil)
+        case 0b011: return knowsUSB4
+            ? ("USB 3.2 Gen 2 — 10 Gbps, or 40 Gbps as USB4 Gen 3", 10, 40)
+            : ("USB4 Gen 2×2 — 20 Gbps", 20, nil)
+        case 0b100: return ("USB 3.2 Gen 2 — 10 Gbps, or 80 Gbps as USB4 Gen 4", 10, 80)
         default: return nil
         }
     }
@@ -392,7 +422,11 @@ struct PortInfo: Identifiable, Hashable {
         // Two readings disagreeing. Both are stated rather than one being
         // picked: an active cable under-declaring itself is a known shape, and
         // so is a chip claiming more than the cable can do.
-        if let achieved = achievedGbps, let claimed = emarker.usbGbps, achieved > claimed * 1.05 {
+        // Compared against the most the cable claims under any protocol: a
+        // Thunderbolt link running at 20 Gbps over a cable that does 20 as USB4
+        // is not a contradiction, and comparing it against the USB 3 figure
+        // alone would report one.
+        if let achieved = achievedGbps, let claimed = emarker.maximumGbps, achieved > claimed * 1.05 {
             notes.append(String(
                 format: "The link came up at %.0f Gbps; the chip claims %.0f Gbps", achieved, claimed))
         }

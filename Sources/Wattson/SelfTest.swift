@@ -569,6 +569,36 @@ enum SelfTest {
                             passed: certified.usbGbps == 10 && zeroed.usbGbps == 0.48,
                             detail: "got \(show(certified.usbGbps)) and \(show(zeroed.usbGbps))"))
 
+        // The 240 W cable is the Lenovo ThinkVision's own, with "USB4 20Gbps
+        // 240W" printed on the jacket. Its wattage decodes to exactly the 240 W
+        // the jacket claims, from the same VDO — which is what makes the speed
+        // field's second reading a correction rather than a guess.
+        checks.append(Check(
+            name: "cable: the wattage decoded matches what is printed on the cable",
+            passed: certified.maxWatts == 240,
+            detail: "got \(show(certified.maxWatts)) W"))
+        checks.append(Check(
+            name: "cable: a 20 Gbps USB4 cable is not reported as a 10 Gbps one",
+            passed: certified.maximumGbps == 20,
+            detail: "got \(show(certified.maximumGbps)) Gbps"))
+        checks.append(Check(
+            name: "cable: both readings of the speed field are stated, neither picked",
+            passed: certified.usbSpeed?.contains("10 Gbps") == true
+                && certified.usbSpeed?.contains("20 Gbps") == true,
+            detail: certified.usbSpeed ?? "nil"))
+        // USB4 did not exist to be claimed under PD 3.0, so the same bits mean
+        // only the USB 3 reading on a cable answering at the older revision.
+        var older = certified
+        older.specificationRevision = 2
+        checks.append(Check(name: "cable: an older cable claims only what its revision could",
+                            passed: older.maximumGbps == 10 && older.usbSpeed == "USB 3.2 Gen 2 — 10 Gbps",
+                            detail: "got \(older.usbSpeed ?? "nil")"))
+        // A 20 Gbps link over a cable that claims 20 is not a contradiction.
+        checks.append(Check(
+            name: "cable: a link at the cable's USB4 rate is not called a disagreement",
+            passed: !PortInfo.cableNotes(emarker: certified, negotiatedWatts: nil, achievedGbps: 20)
+                .contains { $0.contains("came up at") }))
+
         let certifiedNotes = PortInfo.cableNotes(
             emarker: certified, negotiatedWatts: nil, achievedGbps: nil)
         checks.append(Check(name: "cable: a certification ID is reported as an ID",
@@ -601,11 +631,11 @@ enum SelfTest {
         let contradiction = PortInfo.cableNotes(
             emarker: certified, negotiatedWatts: nil, achievedGbps: 40)
         checks.append(Check(name: "cable: a link faster than the chip claims states both figures",
-                            passed: contradiction.contains { $0.contains("40 Gbps") && $0.contains("10 Gbps") },
+                            passed: contradiction.contains { $0.contains("40 Gbps") && $0.contains("20 Gbps") },
                             detail: "got \(contradiction.joined(separator: " | "))"))
         checks.append(Check(
             name: "cable: a link matching the chip is not a contradiction",
-            passed: !PortInfo.cableNotes(emarker: certified, negotiatedWatts: nil, achievedGbps: 10)
+            passed: !PortInfo.cableNotes(emarker: certified, negotiatedWatts: nil, achievedGbps: 20)
                 .contains { $0.contains("came up at") }))
 
         // A chip that answered with nothing has made no claims to check.
@@ -794,7 +824,12 @@ enum SelfTest {
                     ],
                 ] as [String: Any],
             ],
-            expectedSpeed: "USB 3.2 Gen 2 — 10 Gbps",
+            // The name of this fixture has said 20 Gbps since it was written
+            // and the expectation under it said 10, which is the whole of the
+            // bug: the encoding means both and only one was being read. The
+            // jacket says "USB4 20Gbps 240W", and the 240 W below decodes out
+            // of the same VDO.
+            expectedSpeed: "USB 3.2 Gen 2 — 10 Gbps, or 20 Gbps as USB4 Gen 2",
             expectedAmps: 5,
             expectedWatts: 240
         ),
