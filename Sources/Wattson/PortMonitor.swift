@@ -465,14 +465,32 @@ struct PortInfo: Identifiable, Hashable {
 
     /// What the cable is certified to carry.
     ///
-    /// Only knowable when power is actually being negotiated: a contract above
-    /// 3 A proves a 5 A e-marker, but with nothing feeding us there is nothing
-    /// to infer from.
+    /// Two things can establish this and nothing else can: the cable's own chip
+    /// stating a figure, or a contract above 3 A, which is legal only over a
+    /// cable whose e-marker declares 5 A. That second one is an inference and
+    /// it runs one way — above 3 A proves a 5 A cable, at or below it proves
+    /// nothing whatsoever.
+    ///
+    /// This used to end in `return "Up to 3 A (60 W)"`, reached whenever a
+    /// contract existed and was not above 3 A. That is the invalid direction of
+    /// the same inference, stated as fact: a 5 A cable carrying a 15 W phone
+    /// charger negotiates 3 A like any other, and the panel called it a 60 W
+    /// cable — against the 100 W printed on the jacket, which was right. Worse,
+    /// it fired on Type-C-only sources, where no PD handshake happens and the
+    /// Mac never gets to ask the cable anything at all.
     var currentRating: String {
-        if let watts = emarker?.maxWatts, let amps = emarker?.maxAmps {
-            return String(format: "%.0f A / %.0f W — from the cable's chip", amps, watts)
+        if let amps = emarker?.maxAmps {
+            if let watts = emarker?.maxWatts {
+                return String(format: "%.0f A / %.0f W — from the cable's chip", amps, watts)
+            }
+            return String(format: "%.0f A — from the cable's chip", amps)
         }
         if isFiveAmpRated { return "e-marked for 5 A (100 W+)" }
+
+        // Everything below is the absence of a reading, and says so. Which
+        // absence it is happens to be the useful part: it tells you whether
+        // there is a capture worth taking here.
+
         // Sourcing tells us nothing about the e-marker: the Mac caps its own
         // output at 3 A regardless of what the cable could take. Saying "no
         // charger attached" here read as a contradiction whenever a charger was
@@ -480,7 +498,23 @@ struct PortInfo: Identifiable, Hashable {
         if negotiated == nil {
             return isSourcing ? "n/a — this Mac is the source" : "Unknown — nothing negotiated"
         }
-        return "Up to 3 A (60 W)"
+        // SOP' rides on the PD protocol. A source advertising a current over
+        // the CC line never opens one, so the cable is never interrogated.
+        if !hasPDContract {
+            return "Unknown — Type-C current only, so the cable was never asked"
+        }
+        // Three different silences, kept apart because they mean different
+        // things to whoever is deciding whether a capture here is worth taking.
+        // All three are stated as observations rather than as conclusions about
+        // the hardware: "nothing answered" is not the same claim as "this cable
+        // has no chip in it", and only the first of those was witnessed.
+        guard let emarker else {
+            return "Unknown — no e-marker answered on this cable"
+        }
+        guard !emarker.contentsWithheld else {
+            return "Unknown — the e-marker answered with nothing"
+        }
+        return "Unknown — the chip answered without stating a current"
     }
 
 

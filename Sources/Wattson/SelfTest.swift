@@ -539,6 +539,79 @@ enum SelfTest {
         checks.append(Check(name: "cable: a chip that published nothing gets no notes",
                             passed: PortInfo.cableNotes(
                                 emarker: withheld, negotiatedWatts: 140, achievedGbps: 40).isEmpty))
+
+        // MARK: What the current rating may and may not be inferred from
+        //
+        // The regression these pin down: a 100 W UGREEN cable carrying a 15 W
+        // Type-C source was reported as "Up to 3 A (60 W)", because the panel
+        // read a 3 A contract as a statement about the cable. It is not one.
+        // Only the chip's own figure and a contract *above* 3 A can establish
+        // anything, and every other path has to say it does not know.
+        func port(
+            contract: PowerOption?, mechanism: String?, emarker: CableEMarker? = nil,
+            sourcing: Bool = false
+        ) -> PortInfo {
+            var port = PortInfo(name: "USB-C (test)", isConnected: true)
+            port.kind = .usbC
+            port.negotiated = contract
+            port.powerSourceKind = mechanism
+            port.emarker = emarker
+            if sourcing { port.outputWatts = 4.5 }
+            return port
+        }
+
+        let threeAmps = PowerOption(milliamps: 3000, milliwatts: 15_000)
+        let fiveAmps = PowerOption(milliamps: 5000, milliwatts: 100_000)
+
+        // The case that was wrong, and the one the user is most likely to hit:
+        // a phone charger that never opens a PD session at all.
+        let typeCOnly = port(contract: threeAmps, mechanism: "TypeC").currentRating
+        checks.append(Check(
+            name: "cable current: a 3 A Type-C contract rates nothing",
+            passed: !typeCOnly.contains("60 W") && !typeCOnly.contains("3 A ("),
+            detail: "got \(typeCOnly)"))
+        checks.append(Check(
+            name: "cable current: no PD handshake says the cable was never asked",
+            passed: typeCOnly.contains("never asked"),
+            detail: "got \(typeCOnly)"))
+
+        // A real PD contract at 3 A still proves nothing about the cable.
+        let pdSilent = port(contract: threeAmps, mechanism: "USB-PD").currentRating
+        checks.append(Check(
+            name: "cable current: a 3 A PD contract with no e-marker rates nothing",
+            passed: pdSilent.hasPrefix("Unknown") && !pdSilent.contains("60 W"),
+            detail: "got \(pdSilent)"))
+
+        // Above 3 A is the one inference that holds, and it still holds.
+        let over = port(contract: fiveAmps, mechanism: "USB-PD").currentRating
+        checks.append(Check(
+            name: "cable current: above 3 A still proves a 5 A e-marker",
+            passed: over.contains("5 A"),
+            detail: "got \(over)"))
+
+        // The chip's own word beats every inference, including that one.
+        let stated = port(contract: threeAmps, mechanism: "USB-PD", emarker: zeroed).currentRating
+        checks.append(Check(
+            name: "cable current: the chip's own figure wins over the contract",
+            passed: stated.contains("5 A") && stated.contains("100 W")
+                && stated.contains("from the cable's chip"),
+            detail: "got \(stated)"))
+
+        // A chip that was found and said nothing is a different answer from no
+        // chip at all: one of them means a capture here would be worth taking.
+        let empty = port(contract: threeAmps, mechanism: "USB-PD", emarker: withheld).currentRating
+        checks.append(Check(
+            name: "cable current: a silent chip is told apart from an absent one",
+            passed: empty != pdSilent && empty.hasPrefix("Unknown"),
+            detail: "got \(empty) against \(pdSilent)"))
+
+        // Unchanged: the Mac feeding a port caps itself at 3 A whatever the
+        // cable could take, so its own output is not evidence either.
+        let feeding = port(contract: nil, mechanism: nil, sourcing: true).currentRating
+        checks.append(Check(
+            name: "cable current: this Mac sourcing is not a cable rating",
+            passed: feeding.contains("this Mac is the source"),
+            detail: "got \(feeding)"))
         return checks
     }
 
