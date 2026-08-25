@@ -2,6 +2,36 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// Whether the app currently wants a Dock icon and a menu bar.
+///
+/// An accessory app has neither, so opening a window means asking for
+/// `.regular` and closing one means giving it back. Each window controller used
+/// to do that on its own, which meant closing either of them dropped the policy
+/// while the *other* one was still on screen — a Settings window left with no
+/// menu bar above it and no ⌘W to close it with. The policy belongs to the app,
+/// so the decision is made once, here, by counting what is left.
+@MainActor
+enum ActivationPolicy {
+    static func claim() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// A closing window is still in `NSApp.windows` when its delegate hears
+    /// about it, so it is excluded by identity rather than by visibility.
+    ///
+    /// `canBecomeMain` is what separates a real window from the app's other
+    /// surfaces: the popover's window and the toast panel are both visible and
+    /// neither is a reason to keep a menu bar on screen.
+    static func relinquish(after closing: NSWindow?) {
+        let remaining = NSApp.windows.contains {
+            $0 !== closing && $0.isVisible && $0.canBecomeMain
+        }
+        guard !remaining else { return }
+        NSApp.setActivationPolicy(.accessory)
+    }
+}
+
 /// Owns the menu bar item and the popover.
 ///
 /// This is AppKit rather than SwiftUI's `MenuBarExtra` on purpose: MenuBarExtra

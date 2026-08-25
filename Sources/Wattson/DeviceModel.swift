@@ -403,7 +403,7 @@ final class DeviceModel: ObservableObject {
             return SpeedFormat.humanRate(mbps)
 
         case .adapterRating:
-            guard let watts = power.adapterWatts else { return "No Power" }
+            guard let watts = power.adapterWatts else { return "No charger" }
             return String(format: "%.0f W", watts)
         }
     }
@@ -411,6 +411,63 @@ final class DeviceModel: ObservableObject {
     /// Match the panel exactly: if it reads 2.34 W, so does the menu bar.
     private func format(_ watts: Double) -> String {
         String(format: "%.2f W", watts)
+    }
+
+    /// The gauge's own runtime estimate, and only ever the one that applies.
+    ///
+    /// Which one that is follows the direction the cell is actually moving, not
+    /// whether a charger is attached. Those are different questions: a Mac on a
+    /// brick too small for it is discharging, and there is no time-to-full for
+    /// a pack that is going down. Keying this on `externalConnected` meant that
+    /// machine — the one this app exists for — got no estimate at all.
+    var batteryRuntimeSummary: String? {
+        if isCharging, let minutes = power.minutesToFull, minutes > 0 {
+            return Self.duration(minutes) + " until full"
+        }
+        if !isCharging, let minutes = power.minutesToEmpty, minutes > 0 {
+            return Self.duration(minutes) + " left"
+        }
+        return nil
+    }
+
+    /// The second line of the battery cluster: what the cell is doing, how long
+    /// the gauge thinks that leaves, and how warm it is.
+    ///
+    /// The flow is here rather than beside the state word, where it used to be.
+    /// Appended there it was the part that ran out of room and truncated — and
+    /// it truncated in exactly the case it exists for, a charger that is not
+    /// keeping up, where the panel read "draining · -3.85…".
+    ///
+    /// Capacity and cycle count are deliberately *not* here. They are wear
+    /// figures that move a few times a month, they say nothing about what the
+    /// machine is doing right now, and putting them on a live monitor made a
+    /// row out of something nobody reads twice. `--dump` and `--json` carry
+    /// them, unclamped, for anyone who wants them.
+    var batteryNote: String? {
+        var parts: [String] = []
+        // Only when it is not already on screen. The bar draws charge going in
+        // as its green segment, and on battery the headline is the flow — so
+        // this earns its place only when neither is true, which is the case of
+        // a charger attached and the cell going down anyway.
+        let inBar = power.allocation?.segments.contains { $0.id == "battery" } ?? false
+        if power.externalConnected, !inBar,
+           let watts = power.batteryWatts, abs(watts) > 0.05 {
+            parts.append(String(format: "%+.2f W", watts))
+        }
+        if let runtime = batteryRuntimeSummary { parts.append(runtime) }
+        if let temperature = batteryTemperatureSummary { parts.append(temperature) }
+        return parts.joined(separator: " · ").nilIfEmpty
+    }
+
+    /// Whole degrees. The tenth the gauge publishes changes every sample and
+    /// means nothing at this size.
+    var batteryTemperatureSummary: String? {
+        power.health.temperature.map { String(format: "%.0f °C", $0) }
+    }
+
+    /// "5 h 4 min", or just the minutes below an hour.
+    private static func duration(_ minutes: Int) -> String {
+        minutes < 60 ? "\(minutes) min" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
     /// The one live figure: what is coming from the wall while plugged in, and
@@ -722,6 +779,12 @@ final class DeviceModel: ObservableObject {
             }
         }
 
+        // Liquid is a property of the connector, not of the charger, so it is
+        // read on its own rather than from inside notePowerChanges: that put it
+        // behind the charger switch *and* behind a `guard externalConnected`,
+        // which meant the one fault macOS announces exactly once and never
+        // again was only ever repeated back if you happened to be plugged in.
+        noteLiquid()
         notePowerChanges()
     }
 
@@ -764,7 +827,6 @@ final class DeviceModel: ObservableObject {
 
         noteContractChange(from: previous)
         noteDrainOnCharger()
-        noteLiquid()
     }
 
     /// Whether there is anything worth printing yet: a rating, and either a
@@ -814,8 +876,19 @@ final class DeviceModel: ObservableObject {
     /// Unlike the drain warning there is no settling period: this is the
     /// controller's own latched finding, not a measurement that can dip for a
     /// moment under load, so there is nothing to wait out.
+    ///
+    /// Deliberately not gated on `announcePower` or on a charger being
+    /// attached. A wet connector shorts whatever is in it — a peripheral, or
+    /// nothing at all — and both of those gates were inherited from the
+    /// charger-notice block this used to be called from rather than chosen.
+    /// `warnLiquid` is its own switch and is the only one that applies.
     private func noteLiquid() {
         guard warnLiquid else { return }
+        // Ahead of the bookkeeping below, so a port that goes wet while the
+        // panel is up is still announced once it closes. The panel says this
+        // itself on the card, and a toast over the top of it would be the
+        // same sentence twice.
+        guard !isPresented else { return }
         let affected = Set(ports.filter { $0.liquid?.isNoteworthy == true }.map(\.id))
         for port in ports where port.liquid?.isNoteworthy == true {
             guard !liquidAnnounced.contains(port.id) else { continue }
@@ -1025,7 +1098,11 @@ final class DeviceModel: ObservableObject {
         switch role {
         case .source: parts.append("Charging this Mac")
         case .sink: parts.append("Powered by this Mac")
-        case .idle: parts.append(port.carriesData ? "Data only, no power" : "Nothing flowing")
+        // The port's own account of what is on it, rather than a second way of
+        // saying nothing is happening. A bare cable used to be described three
+        // times over — "USB-C (front)" / "Nothing flowing" / "No data link" —
+        // which is a card whose every line says the same thing.
+        case .idle: parts.append(port.attachedHeadline)
         }
         // When anything else names the card, the port becomes supporting detail.
         if named { parts.append(port.name) }
@@ -1062,7 +1139,10 @@ final class DeviceModel: ObservableObject {
             return [naming.typeLabel, naming.linkSummary, showVendors ? naming.vendor : nil]
                 .compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }
-        return port.describesCable ? port.linkSummary : nil
+        // Only when there is a link to describe. With nothing carrying data
+        // `linkSummary` returns "No data link", which is what the subtitle
+        // directly above it has just finished saying.
+        return port.describesCable && port.carriesData ? port.linkSummary : nil
     }
 
     /// The charger's own account of itself. Apple's bricks fill all of this in;
@@ -1140,6 +1220,18 @@ final class DeviceModel: ObservableObject {
 
     func refreshLaunchAtLogin() {
         launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Throws away everything the connection log has recorded.
+    ///
+    /// It lives in UserDefaults and survives quitting, and it carries the name
+    /// of everything that has ever been plugged in keyed on that thing's own
+    /// serial — so there has to be a way to empty it that is not "go and find
+    /// the plist". `ConnectionLog.clear()` has existed the whole time with
+    /// nothing calling it.
+    func clearHistory() {
+        log.clear()
+        objectWillChange.send()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

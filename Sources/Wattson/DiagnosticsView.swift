@@ -49,6 +49,9 @@ struct DiagnosticTarget: Identifiable, Hashable {
 /// replugged: it captures the hardware's state exactly when Save is pressed.
 struct DiagnosticsView: View {
     @ObservedObject var model: DeviceModel
+    /// Closing is the window controller's job: this view is hosted in a plain
+    /// `NSWindow`, which `@Environment(\.dismiss)` knows nothing about.
+    let dismiss: () -> Void
     @State private var selectedID = ""
     @State private var label = ""
     @State private var isCapturing = false
@@ -135,7 +138,7 @@ struct DiagnosticsView: View {
         .frame(width: 500)
         .onAppear { synchronizeSelection() }
         .onChange(of: targets.map(\.id)) { _ in synchronizeSelection() }
-        .onExitCommand { NSApp.keyWindow?.close() }
+        .onExitCommand { dismiss() }
     }
 
     private func synchronizeSelection() {
@@ -174,7 +177,11 @@ struct DiagnosticsView: View {
         }
         do {
             try report.write(to: url, atomically: true, encoding: .utf8)
-            outcome = "Saved \(url.lastPathComponent). You can send that file back here when you are ready."
+            // The save panel has already shown where the file went, so a success
+            // line here would only ever be read by whoever opens the window next.
+            // Close instead, and leave no stale outcome behind for that visit.
+            outcome = nil
+            dismiss()
         } catch {
             outcome = "Could not save the report: \(error.localizedDescription)"
         }
@@ -188,7 +195,9 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     func show(model: DeviceModel) {
         if window == nil {
             let window = NSWindow(
-                contentViewController: NSHostingController(rootView: DiagnosticsView(model: model))
+                contentViewController: NSHostingController(
+                    rootView: DiagnosticsView(model: model) { [weak self] in self?.window?.close() }
+                )
             )
             window.styleMask = [.titled, .closable]
             window.title = "Capture Device Diagnostic"
@@ -198,12 +207,13 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             self.window = window
         }
         model.refresh()
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        ActivationPolicy.claim()
         window?.makeKeyAndOrderFront(nil)
     }
 
+    /// Only once nothing else is left open — Settings may still be up behind
+    /// this one. See `ActivationPolicy`.
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in NSApp.setActivationPolicy(.accessory) }
+        Task { @MainActor in ActivationPolicy.relinquish(after: self.window) }
     }
 }

@@ -72,12 +72,22 @@ struct SettingsView: View {
             // the labels alone did not tell you what you would get.
             Picker("Show", selection: $model.titleMode) {
                 ForEach(TitleMode.allCases) { mode in
-                    (Text(mode.label) + Text("   " + preview(mode)).foregroundColor(.secondary))
+                    (Text(mode.label) + Text(preview(mode)).foregroundColor(.secondary))
                         .tag(mode)
                 }
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
+
+            // Because the previews are live, they are also only as
+            // distinguishing as the moment you are reading them in. On battery
+            // four of these produce the same two strings, and somebody picking
+            // between them deserves to know that rather than conclude the
+            // options are duplicates.
+            Text("Previews are live, so several read alike on battery and differ once a charger is attached.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -103,7 +113,6 @@ struct SettingsView: View {
             group("What to announce") {
                 Toggle("Chargers", isOn: $model.announcePower)
                 Toggle("Warn when the battery drains on a charger", isOn: $model.warnBatteryDrain)
-                Toggle("Warn when liquid is detected in a port", isOn: $model.warnLiquid)
                     .disabled(!model.announcePower)
                     .padding(.leading, 16)
                 Toggle("Contract changes", isOn: $model.announceContract)
@@ -111,6 +120,12 @@ struct SettingsView: View {
                     .padding(.leading, 16)
                 Toggle("Drives and cards", isOn: $model.announceStorage)
                 Toggle("Everything else that plugs in", isOn: $model.announceDevices)
+                // Last, and deliberately not indented under Chargers: this is
+                // the only switch that governs it. A connector can be wet with
+                // a peripheral in it or with nothing in it at all, so tying it
+                // to whether chargers are announced was never a decision — it
+                // was where the code happened to live.
+                Toggle("Warn when liquid is detected in a port", isOn: $model.warnLiquid)
             }
 
             group("Where they show") {
@@ -164,6 +179,15 @@ struct SettingsView: View {
                 ))
             }
 
+            group("Connection History") {
+                Text("What has been plugged in and when, kept between launches so a device's card can say when it last came and went.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Clear History…") { confirmClearHistory() }
+                    .disabled(model.log.events.isEmpty)
+            }
+
             group("Debug Options") {
                 Toggle("Show raw hardware capture", isOn: $model.showDebugOptions)
                 Text("Adds a diagnostic capture command to the menu. Reports can be large and may include serial numbers.")
@@ -172,6 +196,25 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// Asked before it happens, because there is nothing to undo it with and
+    /// the log is the only record of anything that is no longer plugged in.
+    private func confirmClearHistory() {
+        let alert = NSAlert()
+        alert.messageText = "Clear the connection history?"
+        alert.informativeText = """
+        Wattson will forget every attach and detach it has recorded, \
+        for every device. Anything still plugged in will start a fresh \
+        history from now.
+
+        This cannot be undone.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.clearHistory()
     }
 
     /// What this is, where it lives, and who to blame for it.
@@ -198,8 +241,11 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
+    /// Nothing at all for icon-only, rather than the words "icon only" sitting
+    /// in the preview column where every other row shows a live reading. It
+    /// read as a value the mode produces, which is the one thing it is not.
     private func preview(_ mode: TitleMode) -> String {
-        model.title(for: mode) ?? "icon only"
+        model.title(for: mode).map { "   " + $0 } ?? ""
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -241,6 +287,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
             // content rather than to a hard-coded height that has to be kept
             // in step with it.
             let hosting = NSHostingController(rootView: SettingsView(model: model, tab: tab))
+            // `resizeToFit` only runs on a tab change, which left the panes
+            // that grow *in place* clipped: the notifications pane sprouting
+            // the "macOS is not letting Wattson post notifications" line, and
+            // General swapping its Low Power text once the rule is installed.
+            // Publishing a preferred size makes the window follow those too.
+            hosting.sizingOptions = [.preferredContentSize]
             let window = NSWindow(contentViewController: hosting)
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -260,8 +312,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
             self.window = window
         }
         // An .accessory app has no Dock icon, so it must ask for focus itself.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        ActivationPolicy.claim()
         window?.makeKeyAndOrderFront(nil)
     }
 
@@ -322,9 +373,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
         }
     }
 
-    /// Drop back to menu-bar-only once the window goes away.
+    /// Drop back to menu-bar-only once the *last* window goes away, which is
+    /// not necessarily this one. See `ActivationPolicy`.
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in NSApp.setActivationPolicy(.accessory) }
+        Task { @MainActor in ActivationPolicy.relinquish(after: self.window) }
     }
 }
 

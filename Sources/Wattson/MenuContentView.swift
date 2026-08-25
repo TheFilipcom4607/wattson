@@ -77,6 +77,18 @@ struct MenuContentView: View {
                 AllocationLegend(allocation: allocation, headroom: allocation.headroom)
             }
 
+            // A latched pack fault, said where a fault should be said. Wear
+            // never reaches this line: a battery at 79% of design is working as
+            // built, and the capacity and cycle figures behind that judgement
+            // stay in --dump and --json where they can be read in full.
+            if model.power.health.needsService {
+                WarningRow(
+                    symbol: "exclamationmark.triangle.fill",
+                    text: "Service recommended",
+                    detail: "The battery's own gauge has latched a fault."
+                )
+            }
+
             if model.showSparkline, model.history.count > 1 {
                 Sparkline(samples: model.history).padding(.top, 2)
             }
@@ -198,7 +210,11 @@ struct MenuContentView: View {
                 if model.lowPowerBusy {
                     ProgressView().controlSize(.small).scaleEffect(0.7)
                 }
-                Toggle("", isOn: Binding(
+                // Labelled, then hidden. `Toggle("")` reads out as a bare
+                // "switch" with nothing to say what it switches — the visible
+                // caption to its left is a separate Text that VoiceOver has no
+                // reason to associate with it.
+                Toggle("Low Power Mode", isOn: Binding(
                     get: { model.lowPower.inEffect(externalConnected: model.power.externalConnected) },
                     set: { toggleLowPower(to: $0) }
                 ))
@@ -254,12 +270,17 @@ struct MenuContentView: View {
             : model.power.batteryWatts
 
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // Both pinned. Everything else in this row can give a little; the
+            // headline figure cannot, and without this it was the thing that
+            // got squeezed once the battery block below wanted its full width.
             Text(watts.map { String(format: "%.2f", $0) } ?? "—")
                 .font(.system(size: 34, weight: .medium, design: .rounded))
                 .monospacedDigit()
+                .fixedSize()
             Text("W")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(.secondary)
+                .fixedSize()
 
             Spacer(minLength: 8)
 
@@ -267,29 +288,58 @@ struct MenuContentView: View {
             // row of its own: on battery that space is empty, and a row that is
             // three quarters air is a row not worth its height.
             if let percent = model.power.batteryPercent {
-                BatteryGauge(
-                    percent: percent, charging: model.isCharging, lowPower: model.isLowPowerOn
-                )
-                    // A shape has no baseline of its own, so it would sit on
-                    // the wattage's — which puts it a little low against digits.
-                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
-                Text("\(percent)")
-                    .font(.system(size: 23, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                Text("%")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                if let state = batteryStateText {
-                    Text(state)
-                        .font(.system(size: 10))
-                        .monospacedDigit()
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        // Plugged in, this shares the row with the volts and
-                        // amps; it gives way rather than pushing them off.
-                        .minimumScaleFactor(0.75)
-                        .layoutPriority(-1)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        BatteryGauge(
+                            percent: percent, charging: model.isCharging, lowPower: model.isLowPowerOn
+                        )
+                            // A shape has no baseline of its own, so it would sit
+                            // on the wattage's — which puts it a little low
+                            // against digits.
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
+                        Text("\(percent)")
+                            .font(.system(size: 23, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                        Text("%")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        if let state = batteryStateText {
+                            Text(state)
+                                .font(.system(size: 10))
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                // Plugged in, this shares the row with the volts
+                                // and amps; it gives way rather than pushing
+                                // them off.
+                                .minimumScaleFactor(0.75)
+                                .layoutPriority(-1)
+                        }
+                    }
+                    // The half of this corner the wattage's height already paid
+                    // for and nothing was using. Both facts are about the cell
+                    // the gauge above them draws, so this is where they belong —
+                    // a battery section of their own put a second thing called
+                    // "Battery" a few points from the bar's own legend entry.
+                    if let note = model.batteryNote {
+                        Text(note)
+                            .font(.system(size: 11))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            // A floor, not a target. Only the crowded case —
+                            // flow, estimate and temperature all at once — ever
+                            // reaches it.
+                            .minimumScaleFactor(0.8)
+                    }
                 }
+                // The whole point of the priority: a Text carrying a
+                // minimumScaleFactor reports a minimum width far below its
+                // ideal, which makes it the cheapest thing in the row to
+                // squeeze — so the Spacer kept its 50-odd points of nothing
+                // while the note rendered at eight and a half. Claiming the
+                // width first puts that back the right way round.
+                .layoutPriority(1)
             }
 
             if let volts = model.power.inputVolts, let amps = model.power.inputAmps,
@@ -301,22 +351,16 @@ struct MenuContentView: View {
                 .font(.system(size: 11, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+                .fixedSize()
                 .padding(.leading, 6)
             }
         }
     }
 
-    /// "charging", or "draining · -2.31 W" whenever the flow is not already on
-    /// screen — which is exactly the case where it matters most: plugged in,
-    /// but the charger is not keeping up and the cell is still going down.
-    private var batteryStateText: String? {
-        guard let state = model.power.batteryState else { return nil }
-        let inBar = model.power.allocation?.segments.contains { $0.id == "battery" } ?? false
-        guard model.power.externalConnected, !inBar,
-              let watts = model.power.batteryWatts, abs(watts) > 0.05
-        else { return state }
-        return state + String(format: " · %+.2f W", watts)
-    }
+    /// "charging", "draining", "holding". The flow that used to be appended to
+    /// this now lives on the line below, where there is room for it — see
+    /// `DeviceModel.batteryNote`.
+    private var batteryStateText: String? { model.power.batteryState }
 
     // MARK: - Body
 
@@ -502,6 +546,8 @@ private struct SpeedBar: View {
             }
             .clipShape(Capsule())
         }
+        // The clock and its ceiling are spelled out in the row below this.
+        .accessibilityHidden(true)
         .frame(height: 5)
     }
 }
@@ -522,6 +568,8 @@ private struct AllocationBar: View {
             }
             .clipShape(Capsule())
         }
+        // Every segment is named and totalled in the legend underneath.
+        .accessibilityHidden(true)
         .frame(height: 7)
     }
 
@@ -537,29 +585,47 @@ private struct AllocationLegend: View {
     /// empty tail the bar already draws.
     let headroom: Double?
 
+    /// Three segments, their wattages and a headroom figure do not fit across
+    /// 352 points at this size, and what gave way was the word "Accessories" —
+    /// truncated to "Access…", which is the one label a reader cannot infer
+    /// from the colour of its dot. Headroom drops to a line of its own instead:
+    /// it is the least urgent thing here and it is already drawn, as the empty
+    /// tail of the bar above.
+    private var headroomNeedsItsOwnLine: Bool { allocation.segments.count > 2 }
+
     var body: some View {
-        // Fixed gaps with a trailing Spacer: distributing them edge to edge
-        // made two segments read as two unrelated readouts rather than a key.
-        HStack(spacing: 14) {
-            ForEach(allocation.segments) { segment in
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(allocationColor(segment.id))
-                        .frame(width: 6, height: 6)
-                    Text(segment.label).foregroundStyle(.secondary)
-                    Text(String(format: "%.1f W", segment.watts)).monospacedDigit()
+        VStack(alignment: .trailing, spacing: 1) {
+            // Fixed gaps with a trailing Spacer: distributing them edge to edge
+            // made two segments read as two unrelated readouts rather than a key.
+            HStack(spacing: 14) {
+                ForEach(allocation.segments) { segment in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(allocationColor(segment.id))
+                            .frame(width: 6, height: 6)
+                        Text(segment.label).foregroundStyle(.secondary)
+                        Text(String(format: "%.1f W", segment.watts)).monospacedDigit()
+                    }
+                }
+                Spacer(minLength: 4)
+                if let headroom, !headroomNeedsItsOwnLine {
+                    headroomText(headroom)
                 }
             }
-            Spacer(minLength: 4)
-            if let headroom {
-                Text(String(format: "%.0f W headroom", headroom))
-                    .monospacedDigit()
-                    .foregroundStyle(.tertiary)
+            if let headroom, headroomNeedsItsOwnLine {
+                headroomText(headroom)
             }
         }
         .font(.system(size: 10))
         .lineLimit(1)
         .minimumScaleFactor(0.75)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func headroomText(_ headroom: Double) -> some View {
+        Text(String(format: "%.0f W headroom", headroom))
+            .monospacedDigit()
+            .foregroundStyle(.tertiary)
     }
 }
 
@@ -572,7 +638,13 @@ private struct Sparkline: View {
     /// Zero-based, so the height still means something absolute, but with
     /// headroom above the peak — a steady load pinned to the ceiling filled the
     /// whole box and read as a solid rectangle rather than a graph.
-    private var ceiling: Double { peak * 1.2 }
+    ///
+    /// 1.2 was not enough of it. A machine holding a constant draw is the
+    /// ordinary case, and at 1.2 its line sat at 83% of the box with a
+    /// saturated fill under all of it: the panel's largest element, carrying
+    /// the least information in it. The fill is lighter now for the same
+    /// reason — the line is the figure, and the wash under it is shading.
+    private var ceiling: Double { peak * 1.45 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -592,7 +664,7 @@ private struct Sparkline: View {
                     areaPath(in: geometry.size)
                         .fill(
                             LinearGradient(
-                                colors: [.accentColor.opacity(0.22), .accentColor.opacity(0.01)],
+                                colors: [.accentColor.opacity(0.16), .accentColor.opacity(0)],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -604,6 +676,10 @@ private struct Sparkline: View {
             .frame(height: 34)
             .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary.opacity(0.35)))
             .clipShape(RoundedRectangle(cornerRadius: 5))
+            // The span and the peak are Text directly above, and a trace of a
+            // hundred and fifty samples has no reading a screen reader could
+            // use that those two do not already give.
+            .accessibilityHidden(true)
         }
     }
 
@@ -664,6 +740,20 @@ private struct ConnectionCard: View {
             Button(action: toggle) { headerRow }
                 .buttonStyle(.plain)
 
+            // On the card itself rather than behind the chevron, and rather
+            // than only in a notice. macOS shows its own alert the moment the
+            // circuit fires and nothing ever again, so a port that has quietly
+            // stopped charging has to leave something behind that can be gone
+            // and looked at — which a toast three seconds long is not.
+            if let liquid = connection.port?.liquid?.summary {
+                WarningRow(
+                    symbol: "drop.triangle.fill",
+                    text: liquid,
+                    detail: "Disconnect the cable and let the port dry."
+                )
+                .padding(.top, 6)
+            }
+
             if !connection.extraDevices.isEmpty {
                 // No spacing between rows: the tree guides are drawn per row
                 // and have to meet to read as continuous lines.
@@ -680,12 +770,13 @@ private struct ConnectionCard: View {
                 .padding(.top, 6)
             }
 
-            if isExpanded, !detailRows.isEmpty || !connection.profiles.isEmpty {
+            if isExpanded, !detailRows.isEmpty || !connection.profiles.isEmpty || !cableNotes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Divider().opacity(0.5).padding(.bottom, 2)
                     ForEach(Array(detailRows.enumerated()), id: \.offset) { _, row in
                         DetailRow(label: row.label, value: row.value)
                     }
+                    if !cableNotes.isEmpty { CableNotesRow(notes: cableNotes) }
                     if !connection.profiles.isEmpty {
                         ProfileRow(
                             profiles: connection.profiles,
@@ -702,6 +793,10 @@ private struct ConnectionCard: View {
                     }
                 }
                 .padding(.top, 7)
+                // As the device inspector already is. A charger's serial and
+                // firmware were the two things on this panel nobody could copy,
+                // and they are the two most likely to be typed into a search box.
+                .textSelection(.enabled)
             }
         }
         .padding(10)
@@ -769,6 +864,13 @@ private struct ConnectionCard: View {
         .contentShape(Rectangle())
     }
 
+    /// Facts about the cable's chip that are sentences rather than values, so
+    /// they cannot share the label column with the rest.
+    private var cableNotes: [String] {
+        guard showCable, let port = connection.port else { return [] }
+        return port.cableNotes
+    }
+
     private var detailRows: [(label: String, value: String)] {
         var rows: [(label: String, value: String)] = []
 
@@ -790,6 +892,13 @@ private struct ConnectionCard: View {
                 if port.carriesData {
                     rows.append(("Link now", port.activeSummary))
                 }
+                // What the link actually settled on, as against what the port
+                // is capable of. Already gated on an active CIO transport,
+                // because an idle port on this Mac reports a perfectly
+                // plausible 10 Gbps link with nothing attached at all.
+                if let achieved = port.thunderboltAchieved {
+                    rows.append(("Thunderbolt", achieved))
+                }
                 // "Cable max" claimed a ceiling that is only knowable when the
                 // cable's own chip is readable. Otherwise this is a floor: the
                 // fastest thing seen so far, which may be the device's limit.
@@ -797,6 +906,36 @@ private struct ConnectionCard: View {
                              port.cableCapability))
                 rows.append(("Cable", port.cableWiringSummary))
                 rows.append(("Current", port.currentRating))
+                // The far end's own account of itself, read at the SOP address.
+                // A dock or a charger answers here whether or not it enumerates
+                // as a USB device, and for some of them it is the only identity
+                // published anywhere the Mac can reach.
+                if let partner = port.partner, partner.identifiesItself {
+                    let described = [partner.vendorName, partner.productTypeDescription]
+                        .compactMap { $0 }.joined(separator: " · ")
+                    if !described.isEmpty { rows.append(("Far end", described)) }
+                }
+            }
+
+            // How the two high-speed lanes are actually assigned — the answer
+            // to a dock's ethernet crawling while a monitor is plugged in.
+            // Gated on the port being occupied: an idle port's lanes are parked
+            // rather than contended, and AppleTypeCPhy goes on reporting the
+            // last assignment it made.
+            if port.describesCable, port.isConnected, let phy = port.phy {
+                if let lanes = phy.laneSummary {
+                    rows.append(("Lanes", lanes))
+                }
+                if let display = phy.displaySummary {
+                    rows.append(("Display link", display))
+                }
+            }
+            // One way only. `displayCompression` is nil for every mode that
+            // appears to fit, because the figure it is compared against is a
+            // floor — exceeding it proves a mode cannot be carried
+            // uncompressed, and coming in under it proves nothing at all.
+            if let compression = port.displayCompression {
+                rows.append(("Compressed", compression))
             }
             // Why a device can enumerate and then do nothing: macOS declined
             // it. Nothing else in the panel can account for that.
@@ -806,12 +945,27 @@ private struct ConnectionCard: View {
             } else if let authorization = port.authorization, authorization != "Not Required" {
                 rows.append(("Accessory", authorization))
             }
+            // A separate axis from the row above: authentication is the
+            // accessory proving what it is, authorisation is the policy
+            // deciding whether to let it in. "Idle" is what everything that
+            // never starts one reports, and says nothing worth a row.
+            if let authentication = port.authentication, authentication != "Idle" {
+                rows.append(("Authentication", authentication))
+            }
             if port.isTunnelled {
                 rows.append(("Tunnelled", "Carried inside USB4"))
             }
             // Host is what a Mac always is; the other way round is the news.
             if let role = port.dataRole, role != "Host" {
                 rows.append(("Data role", role))
+            }
+            // Two readings taken from different places for different reasons,
+            // disagreeing. Stated as a disagreement rather than resolved into
+            // an answer, because there is no third opinion to break the tie.
+            if port.occupancyDisagreement {
+                rows.append(("Occupancy", port.ccActive == true
+                    ? "The CC line says something is in the socket; the controller says nothing is"
+                    : "The controller says something is in the socket; the CC line says nothing is"))
             }
             if let count = port.connectionCount {
                 rows.append(("Port use", count == 1
@@ -1079,6 +1233,8 @@ private struct CapacityBar: View {
                     .frame(width: max(1, geometry.size.width * fraction))
             }
         }
+        // `capacitySummary` states the same thing in words directly above.
+        .accessibilityHidden(true)
         .frame(height: 3)
     }
 }
@@ -1155,7 +1311,68 @@ private struct ProfileRow: View {
     }
 }
 
+/// What the cable's chip said, where it is not a label/value pair.
+///
+/// Several short sentences, each of which stands alone, under one label rather
+/// than repeating a label per line. Deliberately not totalled into a rating:
+/// every note here is something the hardware stated outright or something two
+/// readings disagreed about, and none of them is a verdict on whether the cable
+/// is any good — whatcable built that score, ran it against a real corpus and
+/// found it firing on Apple's own cables.
+private struct CableNotesRow: View {
+    let notes: [String]
+
+    var body: some View {
+        DetailRow(label: "Cable notes", value: nil) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(notes, id: \.self) { note in
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Shared pieces
+
+/// Something wrong with the hardware, said where it cannot be missed.
+///
+/// Not folded into the detail rows: those are behind a chevron, and a fault
+/// nobody expands the card to find is a fault nobody sees.
+private struct WarningRow: View {
+    let symbol: String
+    let text: String
+    var detail: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(text)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 5).fill(.orange.opacity(0.12)))
+    }
+}
 
 /// A fixed label column with a wrapping value, so rows line up.
 private struct DetailRow<Content: View>: View {
@@ -1168,6 +1385,13 @@ private struct DetailRow<Content: View>: View {
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+                // The column is fixed so the values line up, and a label that
+                // does not fit it used to wrap onto a second line — which put
+                // the value beside the wrong half of its own label. Shrinking
+                // is the lesser of the two: it costs a point of size on the
+                // longest labels only, and nothing on any of the short ones.
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .frame(width: 74, alignment: .leading)
             if let value {
                 Text(value)
@@ -1202,6 +1426,10 @@ private struct IconButton: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .help(help)
+        // `.help` fills in accessibilityHelp, not the label — so these read out
+        // as unnamed buttons, or as whatever SF Symbol name happens to be in
+        // the image. The tooltip is already the right words; use them.
+        .accessibilityLabel(help)
     }
 }
 

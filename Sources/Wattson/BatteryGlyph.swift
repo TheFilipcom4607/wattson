@@ -242,7 +242,15 @@ struct BatteryGauge: View {
             }
         }
         .frame(width: m.width, height: m.height)
-        .accessibilityLabel("Battery \(percent) percent")
+        // A shape with no text in it, so the label is the whole reading. The
+        // charge state was missing from it: a bolt drawn through the fill is
+        // the only thing that distinguished 73% going up from 73% going down,
+        // and a drawing is exactly what a screen reader cannot see.
+        .accessibilityLabel(
+            "Battery \(percent) percent"
+                + (charging ? ", charging" : "")
+                + (lowPower ? ", Low Power Mode" : "")
+        )
     }
 }
 
