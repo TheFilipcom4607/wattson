@@ -80,6 +80,15 @@ enum SelfTest {
         (key: "BFWC", type: "ui16", bytes: [0x8b, 0x12], registry: 4747),
     ]
 
+    /// The negotiated-contract keys, read while a dock was feeding this Mac.
+    /// The `contract` column is what the port reported through the PD node, not
+    /// a number remembered from the SMC.
+    private static let smcContractCapture: [(key: String, type: String, bytes: [UInt8], contract: Int)] = [
+        (key: "D2MV", type: "ui16", bytes: [0x4e, 0x20], contract: 20000),      // 20 V
+        (key: "D2MI", type: "ui16", bytes: [0x12, 0xc0], contract: 4800),       // 4.80 A
+        (key: "D2MP", type: "ui32", bytes: [0x00, 0x01, 0x77, 0x00], contract: 96000), // 96 W
+    ]
+
     private static func smcChecks() -> [Check] {
         var checks: [Check] = []
         for capture in smcIntegerCapture {
@@ -90,12 +99,32 @@ enum SelfTest {
                 detail: "got \(decoded ?? "nil"), registry says \(capture.registry)"))
         }
 
-        // `#KEY` is the controller's own key count and is the one key that is
-        // genuinely big-endian. Read like the rest it comes out as 1376256000.
+        // `#KEY` is the controller's own key count. Read like the rest it comes
+        // out as 1376256000.
         checks.append(Check(
             name: "smc: #KEY is still read big-endian",
             passed: SMCMonitor.decode(bytes: [0x00, 0x00, 0x08, 0x52], type: "ui32", key: "#KEY") == "2130",
             detail: "got \(SMCMonitor.decode(bytes: [0x00, 0x00, 0x08, 0x52], type: "ui32", key: "#KEY") ?? "nil")"))
+
+        // The contract keys, captured against a dock feeding this Mac while the
+        // port independently reported 20 V, 4.80 A and 96 W. Same self-
+        // validating shape as the battery keys above: the bytes sit beside a
+        // figure the hardware published by another route entirely, and only one
+        // byte order makes all three agree.
+        for capture in smcContractCapture {
+            let decoded = SMCMonitor.decode(bytes: capture.bytes, type: capture.type, key: capture.key)
+            checks.append(Check(
+                name: "smc: \(capture.key) agrees with the contract the port reported",
+                passed: decoded == String(capture.contract),
+                detail: "got \(decoded ?? "nil"), the port said \(capture.contract)"))
+        }
+        // Not a rule that could be inferred from a key name, so the list has to
+        // stay a list — and must not swallow its neighbours.
+        checks.append(Check(name: "smc: the big-endian list does not spread to nearby keys",
+                            passed: !SMCMonitor.isBigEndian(key: "D2JV")
+                                && !SMCMonitor.isBigEndian(key: "D2UI")
+                                && !SMCMonitor.isBigEndian(key: "B0DC")
+                                && SMCMonitor.isBigEndian(key: "D2MV")))
 
         // A rail is claimed by the controller that names it, not by the port
         // whose number happens to match. The numbering here is deliberately

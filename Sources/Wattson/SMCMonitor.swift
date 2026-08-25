@@ -243,16 +243,15 @@ enum SMCMonitor {
     /// measurement — it is the controller's own key count, and the walk above
     /// reads it separately for exactly that reason.
     ///
-    /// One question is left open on purpose: whatport reads D<n>MP / D<n>MV /
-    /// D<n>MI as big-endian, and this Mac reports them as zero with nothing
-    /// plugged in, so there is no reading here that could tell the two apart.
-    /// Wattson does not read those keys, and this dump prints the raw bytes
-    /// beside every value, so a key that disagrees costs a line rather than the
-    /// evidence.
+    /// Which keys are the exception is `isBigEndian(key:)`, and this was
+    /// open until a dock settled it. whatport read D<n>MP / D<n>MV / D<n>MI as
+    /// big-endian; this Mac reported them as zero with nothing attached, so
+    /// nothing here could tell the two apart, and the note used to say so. A
+    /// 96 W contract answered it — see that function.
     static func decode(bytes: [UInt8], type: String, key: String) -> String? {
         func unsigned(_ count: Int) -> UInt64? {
             guard bytes.count >= count else { return nil }
-            guard key != "#KEY" else {
+            guard !isBigEndian(key: key) else {
                 return bytes.prefix(count).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
             }
             return bytes.prefix(count).reversed().reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
@@ -347,12 +346,47 @@ enum SMCMonitor {
     /// The type comes from the controller rather than a table here, so a key
     /// that changes width between machines still reads correctly, and a key
     /// that is not an integer at all reads as nothing instead of as garbage.
+    /// The keys that are big-endian, against a controller whose integers are
+    /// otherwise little-endian.
+    ///
+    /// The SMC genuinely mixes the two, which is not a thing any description of
+    /// it says and is not something a reader can infer from a key's type. Both
+    /// entries here are pinned by a reading that can only be right one way
+    /// round:
+    ///
+    /// - `#KEY` is the controller's own key count. Read little-endian it
+    ///   reports 1,376,256,000 keys.
+    /// - `D<n>MP` / `D<n>MV` / `D<n>MI` are the negotiated contract on a
+    ///   channel. Captured on 2026-08-25 against a dock feeding this Mac a
+    ///   contract the port independently reported as 20 V, 4.80 A and 96 W:
+    ///   D2MV `4E 20` is 20000 mV big-endian and 8270 little-endian, D2MI
+    ///   `12 C0` is 4800 mA against 49170, and D2MP `00 01 77 00` is 96000 mW
+    ///   against 7,799,040. Three keys, three agreements, one byte order.
+    ///
+    /// Everything else is little-endian, which B0CT, B0DC, BQX1 and BFWC pin
+    /// against IORegistry values just as firmly. This is deliberately a list
+    /// rather than a rule: there is no pattern in the key names to generalise
+    /// from, so a key nobody has checked gets the majority treatment and is
+    /// printed beside its raw bytes in the capture, where being wrong costs a
+    /// line rather than the evidence.
+    static func isBigEndian(key: String) -> Bool {
+        if key == "#KEY" { return true }
+        // D<n>MP / D<n>MV / D<n>MI.
+        let characters = Array(key)
+        guard characters.count == 4, characters[0] == "D", characters[1].isNumber,
+              characters[2] == "M", "PVI".contains(characters[3])
+        else { return false }
+        return true
+    }
+
     private static func integer(forKey key: String) -> Int? {
         guard let (info, bytes) = rawBytes(forKey: key) else { return nil }
         let width = Int(info.dataSize)
         guard width > 0, width <= 8, bytes.count >= width else { return nil }
-        let magnitude = bytes.prefix(width).reversed()
-            .reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        let ordered = isBigEndian(key: key)
+            ? Array(bytes.prefix(width))
+            : Array(bytes.prefix(width).reversed())
+        let magnitude = ordered.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         switch typeCode(info.dataType) {
         case "si8 ", "si16", "si32", "si64":
             // Sign bit is the top bit of the value's own width, not of UInt64.
