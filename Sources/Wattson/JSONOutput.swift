@@ -214,6 +214,20 @@ enum JSONOutput {
                 "refreshHz": display.refreshHz,
                 "minimumGbpsUncompressed": display.minimumGbps,
                 "compression": port.displayCompression,
+                // The controller's own account: which displays arrived on this
+                // port, what each link came up at, and the mode where a serial
+                // matched one.
+                "displayLinks": port.displayLinks.map { link in
+                    [
+                        "index": link.index,
+                        "name": link.productName,
+                        "manufacturer": link.manufacturer,
+                        "linkRate": link.linkRate,
+                        "connector": link.connector,
+                        "tunnelled": link.isTunnelled,
+                        "mode": link.mode?.modeSummary,
+                    ] as [String: Any?]
+                },
             ])
         }
         if let liquid = port.liquid {

@@ -215,6 +215,12 @@ enum Entry {
             if let display = port.display {
                 print("   Screen:      \(display.modeSummary)")
             }
+            for link in port.displayLinks {
+                var line = "   Display:     " + link.summary
+                if let mode = link.mode { line += " · " + mode.modeSummary }
+                if let connector = link.connector { line += " · over \(connector)" }
+                print(line)
+            }
             if let verdict = port.displayCompression {
                 print("   Compressed:  \(verdict)")
             }

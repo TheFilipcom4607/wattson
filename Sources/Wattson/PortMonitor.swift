@@ -344,6 +344,10 @@ struct PortInfo: Identifiable, Hashable {
     /// display and exactly one DisplayPort-carrying port make the pairing
     /// unambiguous.
     var display: DisplayInfo?
+    /// Every display the port controller says arrived on this port, named and
+    /// with its own link rate. Unlike `display` above this needs no
+    /// unambiguity rule: the controller states the port outright.
+    var displayLinks: [DisplayLink] = []
 
     /// The picture is being compressed to fit the link it negotiated.
     ///
@@ -674,6 +678,17 @@ enum PortMonitor {
         let carrying = ports.indices.filter { ports[$0].phy?.displayGbps != nil }
         if carrying.count == 1, let display = DisplayMonitor.soleExternal(from: displays) {
             ports[carrying[0]].display = display
+        }
+
+        // The controller's own account, which needs no such rule: it names the
+        // port each display arrived on. Kept alongside rather than replacing
+        // the above, because the two answer different questions — this one says
+        // nothing about the mode being scanned out except where a serial
+        // matched one.
+        let links = DisplayLinkMonitor.joinModes(DisplayLinkMonitor.read(), displays: displays)
+        for index in ports.indices where ports[index].kind == .usbC {
+            guard let number = ports[index].number else { continue }
+            ports[index].displayLinks = links.filter { $0.portNumber == number && $0.isActive }
         }
 
         // Connected ports first, then by name, so the interesting one is on top.

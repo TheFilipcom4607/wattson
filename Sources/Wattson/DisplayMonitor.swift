@@ -17,6 +17,11 @@ struct DisplayInfo: Identifiable, Hashable {
     var refreshHz: Double = 0
     /// The display's registered manufacturer ID, as EDID states it.
     var vendorID: UInt32?
+    var modelNumber: UInt32?
+    /// `CGDisplaySerialNumber`. The same figure the port controller publishes
+    /// as its `SerialNumber`, which is what lets the two accounts be joined
+    /// even when two identical monitors are attached.
+    var serial: UInt32?
 
     var modeSummary: String {
         let refresh = refreshHz > 0 ? String(format: " @ %.0f Hz", refreshHz) : ""
@@ -68,6 +73,137 @@ struct DisplayInfo: Identifiable, Hashable {
     }
 }
 
+/// One display as the *port controller* sees it, which is a different account
+/// from CoreGraphics's.
+///
+/// CoreGraphics knows the mode being scanned out and nothing about the wire.
+/// The port controller knows the wire and nothing about the mode: which
+/// physical port the display arrived on, what the link came up at, whether it
+/// is running natively on the lanes or tunnelled inside Thunderbolt, and what
+/// the monitor calls itself. Neither is complete; joined they are.
+///
+/// This retires a rule rather than adding to one. The display readings used to
+/// require exactly one external display *and* exactly one port carrying
+/// DisplayPort, because nothing said which display was on which port and
+/// guessing would put a verdict against the wrong cable. `ParentBuiltInPortNumber`
+/// says it outright, so the ambiguity the rule existed to avoid is not there
+/// to avoid. Two identical Dell U2520Ds behind one Thunderbolt dock were what
+/// showed this: same name, same product ID, same link rate, told apart by
+/// serial and by nothing else.
+struct DisplayLink: Hashable {
+    /// The physical port this display arrived on, as the controller states it.
+    var portNumber: Int
+    /// Which DisplayPort stream on that port — 0 and 1 for two monitors behind
+    /// one dock.
+    var index: Int
+    /// The monitor's own name, e.g. "DELL U2520D".
+    var productName: String?
+    /// The three-letter PNP code, e.g. "DEL".
+    var manufacturer: String?
+    var productID: Int?
+    /// The EDID serial. The only thing separating two identical monitors, and
+    /// the exact join key to CoreGraphics — `CGDisplaySerialNumber` reports the
+    /// same value.
+    var serial: UInt32?
+    /// Per lane, as the controller words it: "8.1 Gbps (HBR3)".
+    var linkRate: String?
+    /// "DP" or "HDMI" — what the far end of the link actually is, which tells
+    /// an adapter in the chain from a monitor plugged straight in.
+    var connector: String?
+    var isActive: Bool = false
+    /// Running inside a Thunderbolt tunnel rather than natively on the port's
+    /// own high-speed lanes.
+    var isTunnelled: Bool = false
+    var yearOfManufacture: Int?
+    /// The mode CoreGraphics is scanning out on this display, matched by
+    /// serial. Nil when nothing could be matched without guessing.
+    var mode: DisplayInfo?
+
+    /// "DELL U2520D — 8.1 Gbps (HBR3), tunnelled"
+    var summary: String {
+        var parts = [productName ?? "Display \(index)"]
+        if let linkRate { parts.append(linkRate) }
+        if isTunnelled { parts.append("tunnelled") }
+        return parts.joined(separator: " — ")
+    }
+}
+
+enum DisplayLinkMonitor {
+
+    static func read() -> [DisplayLink] {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(
+            kIOMainPortDefault, IOServiceMatching("IOPortTransportStateDisplayPort"), &iterator
+        ) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+
+        var links: [DisplayLink] = []
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            var unmanaged: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(
+                service, &unmanaged, kCFAllocatorDefault, 0
+            ) == KERN_SUCCESS, let properties = unmanaged?.takeRetainedValue() as? [String: Any]
+            else { continue }
+            if let link = self.link(from: properties) { links.append(link) }
+        }
+        return links.sorted { ($0.portNumber, $0.index) < ($1.portNumber, $1.index) }
+    }
+
+    /// Attaches each link's scanned-out mode, matched on the EDID serial.
+    ///
+    /// Serial only. Vendor and product would match both of a matched pair of
+    /// monitors, and a mode put against the wrong one of two identical Dells is
+    /// wrong in a way nobody could see — which is the failure this join exists
+    /// to avoid, not one to accept quietly. A serial of zero is not an
+    /// identifier and matches nothing.
+    static func joinModes(_ links: [DisplayLink], displays: [DisplayInfo]) -> [DisplayLink] {
+        links.map { link in
+            guard let serial = link.serial, serial != 0 else { return link }
+            let matches = displays.filter { $0.serial == serial }
+            guard matches.count == 1 else { return link }
+            var joined = link
+            joined.mode = matches[0]
+            return joined
+        }
+    }
+
+    /// Decodes one node. Split from the walk so captures replay through it.
+    ///
+    /// The identity lives in `Metadata` and is also published flat, the same
+    /// split the PD identity nodes have — but unlike those, both copies are
+    /// populated here. `Metadata` is read first anyway, since it is the copy
+    /// that carries the fields with nowhere else to live.
+    static func link(from properties: [String: Any]) -> DisplayLink? {
+        let metadata = properties["Metadata"] as? [String: Any] ?? [:]
+        func number(_ key: String) -> Int? {
+            ((metadata[key] ?? properties[key]) as? NSNumber)?.intValue
+        }
+        func text(_ key: String) -> String? {
+            ((metadata[key] ?? properties[key]) as? String)?.nilIfEmpty
+        }
+        // Without a port there is nothing to attach the display to, and the
+        // whole point of this reader is the attachment.
+        guard let port = (properties["ParentBuiltInPortNumber"] as? NSNumber)?.intValue,
+              port > 0
+        else { return nil }
+
+        return DisplayLink(
+            portNumber: port,
+            index: (properties["Index"] as? NSNumber)?.intValue ?? 0,
+            productName: text("ProductName"),
+            manufacturer: text("ManufacturerName"),
+            productID: number("ProductID"),
+            serial: number("SerialNumber").map { UInt32(truncatingIfNeeded: $0) },
+            linkRate: text("LinkRateDescription"),
+            connector: text("DFP Type Description"),
+            isActive: properties["Active"] as? Bool ?? false,
+            isTunnelled: properties["Tunneled"] as? Bool ?? false,
+            yearOfManufacture: number("Year of Manufacture")
+        )
+    }
+}
+
 enum DisplayMonitor {
 
     /// Every display macOS is driving, built-in included — the caller decides
@@ -82,6 +218,8 @@ enum DisplayMonitor {
             var info = DisplayInfo(id: id)
             info.isBuiltIn = CGDisplayIsBuiltin(id) != 0
             info.vendorID = CGDisplayVendorNumber(id)
+            info.modelNumber = CGDisplayModelNumber(id)
+            info.serial = CGDisplaySerialNumber(id)
             guard let mode = CGDisplayCopyDisplayMode(id) else { return nil }
             info.pixelWidth = mode.pixelWidth
             info.pixelHeight = mode.pixelHeight

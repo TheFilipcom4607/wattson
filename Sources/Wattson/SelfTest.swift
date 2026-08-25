@@ -35,6 +35,7 @@ enum SelfTest {
         checks += smcChecks()
         checks += connectionStateChecks()
         checks += billboardChecks()
+        checks += displayLinkChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
         checks += headlineChecks()
@@ -749,6 +750,104 @@ enum SelfTest {
         checks.append(Check(name: "headline: a data device drawing power says both",
                             passed: data.attachedHeadline == "Data device, drawing power",
                             detail: "got \(data.attachedHeadline)"))
+        return checks
+    }
+
+    // MARK: - Which display is on which port
+
+    /// The two DisplayPort transport nodes from the Thunderbolt dock capture,
+    /// verbatim but for the EDID blob, which nothing reads.
+    ///
+    /// Both monitors are the same model behind the same dock on the same port,
+    /// at the same link rate. Everything about them is identical except the
+    /// serial, which is exactly the case a join has to survive.
+    private static func dockDisplayNode(index: Int, serial: Int) -> [String: Any] {
+        [
+            "ParentBuiltInPortNumber": NSNumber(value: 2),
+            "Index": NSNumber(value: index),
+            "Active": true,
+            "Tunneled": true,
+            "LinkRateDescription": "8.1 Gbps (HBR3)",
+            "TransportDescription": "Port-USB-C@2/CIO/DisplayPort@\(index)",
+            "Metadata": [
+                "ManufacturerName": "DEL",
+                "ProductName": "DELL U2520D",
+                "ProductID": NSNumber(value: 0xA150),
+                "SerialNumber": NSNumber(value: serial),
+                "DFP Type Description": "DP",
+                "Year of Manufacture": NSNumber(value: 0x7E6),
+            ] as [String: Any],
+        ]
+    }
+
+    private static func displayLinkChecks() -> [Check] {
+        var checks: [Check] = []
+        // Serials as the controller published them, in decimal: 0x304E374C and
+        // 0x304E4D4C.
+        let first = DisplayLinkMonitor.link(from: dockDisplayNode(index: 0, serial: 0x304E374C))
+        let second = DisplayLinkMonitor.link(from: dockDisplayNode(index: 1, serial: 0x304E4D4C))
+        guard let first, let second else {
+            checks.append(Check(name: "display link: the dock's own nodes decode",
+                                passed: false, detail: "parse returned nil"))
+            return checks
+        }
+
+        checks.append(Check(
+            name: "display link: the controller names the port the display arrived on",
+            passed: first.portNumber == 2 && second.portNumber == 2,
+            detail: "got \(first.portNumber) and \(second.portNumber)"))
+        checks.append(Check(
+            name: "display link: the monitor's own name and link rate are read",
+            passed: first.productName == "DELL U2520D" && first.linkRate == "8.1 Gbps (HBR3)"
+                && first.connector == "DP" && first.isTunnelled,
+            detail: first.summary))
+
+        // CoreGraphics's account of the same two monitors, from the same
+        // capture. Vendor 4268 is 0x10AC, which is "DEL" in EDID's packed
+        // three-letter encoding, and 41296 is 0xA150 — so those two fields
+        // agree with the controller and identify *both* monitors equally.
+        // Only the serial separates them.
+        var left = DisplayInfo(id: 2)
+        left.vendorID = 4268; left.modelNumber = 41296; left.serial = 810_437_964
+        left.pixelWidth = 2560; left.pixelHeight = 1440; left.refreshHz = 60
+        var right = DisplayInfo(id: 3)
+        right.vendorID = 4268; right.modelNumber = 41296; right.serial = 810_432_332
+        right.pixelWidth = 2560; right.pixelHeight = 1440; right.refreshHz = 60
+
+        checks.append(Check(
+            name: "display link: the two APIs publish the same serial for the same monitor",
+            passed: UInt32(0x304E374C) == right.serial && UInt32(0x304E4D4C) == left.serial,
+            detail: "controller 0x304E374C = \(UInt32(0x304E374C)), CoreGraphics \(show(right.serial.map(Double.init)))"))
+
+        let joined = DisplayLinkMonitor.joinModes([first, second], displays: [left, right])
+        checks.append(Check(
+            name: "display link: each monitor gets its own mode, not its twin's",
+            passed: joined[0].mode?.id == 3 && joined[1].mode?.id == 2,
+            detail: "got \(String(describing: joined[0].mode?.id)) and \(String(describing: joined[1].mode?.id))"))
+
+        // The join must be the serial doing the work. Vendor and product are
+        // identical across the pair, so a join on those would be a coin toss
+        // that happens to be right half the time.
+        checks.append(Check(
+            name: "display link: vendor and product alone could not have told them apart",
+            passed: left.vendorID == right.vendorID && left.modelNumber == right.modelNumber
+                && left.serial != right.serial))
+        // A serial that matches nothing, or matches more than one, attaches no
+        // mode rather than the wrong one.
+        var ambiguous = right
+        ambiguous.serial = left.serial
+        checks.append(Check(
+            name: "display link: two displays claiming one serial get no mode at all",
+            passed: DisplayLinkMonitor.joinModes([second], displays: [left, ambiguous])[0].mode == nil))
+        var unserialised = first
+        unserialised.serial = 0
+        checks.append(Check(
+            name: "display link: a serial of zero is not an identifier",
+            passed: DisplayLinkMonitor.joinModes([unserialised], displays: [left, right])[0].mode == nil))
+        // A node with no port is not attachable, and attaching is the point.
+        checks.append(Check(
+            name: "display link: a node naming no port is refused",
+            passed: DisplayLinkMonitor.link(from: ["Index": NSNumber(value: 0)]) == nil))
         return checks
     }
 
