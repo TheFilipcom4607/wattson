@@ -17,6 +17,11 @@ enum Entry {
         if arguments.contains("--selftest") {
             exit(SelfTest.run())
         }
+        // `Wattson --health` names every hardware source and whether it
+        // answered, for diffing either side of a macOS upgrade.
+        if arguments.contains("--health") {
+            exit(HealthCheck.run())
+        }
         // `Wattson --json` is `--dump` in a shape something else can read.
         if arguments.contains("--json") {
             let ports = PortMonitor.read()
