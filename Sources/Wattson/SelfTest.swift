@@ -27,6 +27,7 @@ enum SelfTest {
         var checks: [Check] = []
         checks += identityChecks()
         checks += batteryChecks()
+        checks += batteryTreeChecks()
         checks += portStatsChecks()
         checks += thunderboltChecks()
         checks += liquidChecks()
@@ -1433,6 +1434,142 @@ enum SelfTest {
             name: "charging: heat is still named when the setpoint is zero",
             passed: hot.summary(externalConnected: true, isCharging: false)
                 == "Charging is being limited by temperature."))
+        return checks
+    }
+
+    // MARK: - The macOS 27 battery tree
+
+    /// The same Mac on macOS 27, reduced to the keys the readers touch. The top
+    /// node keeps the cycle count and a `BatteryData` with capacity in it; the
+    /// rest moved to the two children. Serial numbers left out.
+    private static let batteryTopCapture27: [String: Any] = [
+        "CycleCount": 21,
+        "DesignCycleCount9C": 1000,
+        "CurrentCapacity": 80,
+        "BatteryData": [
+            "FullChargeCapacity": 4535,
+            "NominalChargeCapacity": 4662,
+            "DesignCapacity": 4629,
+            "MaxCapacity": 100,
+            "CurrentCapacity": 80,
+        ] as [String: Any],
+        "ChargerData": [
+            "NotChargingReason": 16_777_216,
+            "SlowChargingReason": 0,
+            "TimeChargingThermallyLimited": 0,
+            "IsCharging": 0,
+        ] as [String: Any],
+    ]
+
+    /// `AppleSmartBatteryPack`.
+    private static let batteryPackCapture27: [String: Any] = [
+        "ID": 0,
+        "BankCount": 3,
+        "BatteryData": [
+            "CycleCount": 21,
+            "DesignCapacity": 4629,
+            "NominalChargeCapacity": 4662,
+            "AppleRawMaxCapacity": 4535,
+            "Temperature": 2839,
+            "VirtualTemperature": 2839,
+            "PermanentFailureStatus": 0,
+            "BatteryCellDisconnectCount": 0,
+            "LifetimeData": [
+                "MaximumTemperature": 38,
+                "MinimumTemperature": 1,
+                "AverageTemperature": 193,
+            ] as [String: Any],
+        ] as [String: Any],
+    ]
+
+    /// `AppleChargerData`.
+    private static let chargerCapture27: [String: Any] = [
+        "ID": 0,
+        "ChargerData": [
+            "ChargingCurrent": 0,
+            "ChargingVoltage": 4217,
+            "ChargerInhibitReason": 0,
+            "NotChargingReason": 16_777_216,
+            "SlowChargingReason": 0,
+            "TimeChargingThermallyLimited": 0,
+        ] as [String: Any],
+    ]
+
+    private static func batteryTreeChecks() -> [Check] {
+        var checks: [Check] = []
+
+        // The failure itself, kept reproducible: the top node on its own is
+        // what the reader saw on macOS 27, and it knows nothing about condition.
+        let alone = PowerMonitor.health(from: PowerMonitor.batteryProperties(
+            top: batteryTopCapture27, packs: [], chargers: []))
+        checks.append(Check(name: "battery tree: the top node alone has no temperature",
+                            passed: alone.temperature == nil && alone.maximumTemperature == nil))
+        // Capacity is the exception: it survives inside the top node's own
+        // BatteryData, so it must not depend on finding the pack.
+        checks.append(Check(name: "battery tree: capacity is read from the top node's BatteryData",
+                            passed: alone.capacityPercent.map { $0 > 100.7 && $0 < 100.8 } ?? false,
+                            detail: "got \(show(alone.capacityPercent))%"))
+
+        let merged = PowerMonitor.batteryProperties(
+            top: batteryTopCapture27, packs: [batteryPackCapture27], chargers: [chargerCapture27])
+        let health = PowerMonitor.health(from: merged)
+        // Self-validating rather than remembered: the pack publishes the gauge
+        // temperature twice, as Temperature and VirtualTemperature, and the
+        // reading has to agree with the one the reader does not use.
+        let packData = batteryPackCapture27["BatteryData"] as? [String: Any]
+        let virtual = (packData?["VirtualTemperature"] as? Int).map { Double($0) / 100 }
+        checks.append(Check(name: "battery tree: temperature comes from the pack",
+                            passed: health.temperature != nil && health.temperature == virtual,
+                            detail: "got \(show(health.temperature)) °C"))
+        checks.append(Check(name: "battery tree: temperature extremes come from the pack's LifetimeData",
+                            passed: health.minimumTemperature == 1 && health.maximumTemperature == 38,
+                            detail: "got \(show(health.minimumTemperature)) to \(show(health.maximumTemperature))"))
+        checks.append(Check(name: "battery tree: cycle count is unchanged",
+                            passed: health.cycleCount == 21 && health.designCycleCount == 1000))
+        checks.append(Check(name: "battery tree: a healthy pack does not ask for service",
+                            passed: !health.needsService))
+
+        // The warning this whole change exists for. A fault latched on the
+        // pack has to reach the panel through the tree.
+        var faultyPack = batteryPackCapture27
+        var faultyData = faultyPack["BatteryData"] as? [String: Any] ?? [:]
+        faultyData["PermanentFailureStatus"] = 1
+        faultyPack["BatteryData"] = faultyData
+        checks.append(Check(
+            name: "battery tree: a permanent failure on the pack asks for service",
+            passed: PowerMonitor.health(from: PowerMonitor.batteryProperties(
+                top: batteryTopCapture27, packs: [faultyPack], chargers: [])).needsService))
+
+        // Two packs, one condition line: nothing to choose between them with.
+        let ambiguous = PowerMonitor.health(from: PowerMonitor.batteryProperties(
+            top: batteryTopCapture27, packs: [batteryPackCapture27, faultyPack], chargers: []))
+        checks.append(Check(name: "battery tree: two packs are not guessed between",
+                            passed: ambiguous.temperature == nil && !ambiguous.needsService))
+
+        let hold = PowerMonitor.chargingHold(from: merged)
+        checks.append(Check(name: "battery tree: the charge setpoint comes from the charger node",
+                            passed: hold.chargingVoltageMV == 4217 && hold.chargingCurrentMA == 0,
+                            detail: "got \(show(hold.chargingVoltageMV)) mV"))
+        checks.append(Check(name: "battery tree: the reason is still carried raw",
+                            passed: hold.notChargingReason == 16_777_216))
+
+        // macOS 26 and earlier must read exactly as before, even if a child
+        // disagrees: the top node wins every key it publishes.
+        var disagreeingPack = batteryPackCapture27
+        var disagreeingData = disagreeingPack["BatteryData"] as? [String: Any] ?? [:]
+        disagreeingData["Temperature"] = 9999
+        disagreeingData["PermanentFailureStatus"] = 1
+        disagreeingPack["BatteryData"] = disagreeingData
+        let flat = PowerMonitor.health(from: PowerMonitor.batteryProperties(
+            top: batteryCapture, packs: [disagreeingPack], chargers: [chargerCapture27]))
+        checks.append(Check(name: "battery tree: a flat layout is not overridden by a child",
+                            passed: flat.temperature == 30.06 && !flat.needsService
+                                && flat.maximumTemperature == 38,
+                            detail: "got \(show(flat.temperature)) °C"))
+        let flatHold = PowerMonitor.chargingHold(from: PowerMonitor.batteryProperties(
+            top: batteryCapture, packs: [], chargers: [chargerCapture27]))
+        checks.append(Check(name: "battery tree: a flat charger reading is not overridden",
+                            passed: flatHold.chargingVoltageMV == 4249 && flatHold.notChargingReason == 128))
         return checks
     }
 

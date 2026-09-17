@@ -300,10 +300,12 @@ enum PowerMonitor {
         guard service != 0 else { return snapshot }
         defer { IOObjectRelease(service) }
 
-        var unmanaged: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let properties = unmanaged?.takeRetainedValue() as? [String: Any]
-        else { return snapshot }
+        guard let top = registryProperties(of: service) else { return snapshot }
+        let properties = batteryProperties(
+            top: top,
+            packs: childProperties(of: service, conformingTo: "AppleSmartBatteryPack"),
+            chargers: childProperties(of: service, conformingTo: "AppleChargerData")
+        )
 
         snapshot.externalConnected = properties["ExternalConnected"] as? Bool ?? false
         snapshot.isCharging = properties["IsCharging"] as? Bool ?? false
@@ -423,12 +425,6 @@ enum PowerMonitor {
         return snapshot
     }
 
-    /// Reads the pack's condition out of one `AppleSmartBattery` property
-    /// dictionary.
-    ///
-    /// Split from `read()` so recorded captures can be replayed through it —
-    /// see `--selftest`. Capacity and cycle figures sit at the top level;
-    /// the temperature extremes are inside the gauge's own `BatteryData`.
     /// Replaces an input rail that has not caught up yet with the contract the
     /// link settled on. Pure, so `--selftest` drives exactly this. See the call
     /// site for why the measured copy cannot be trusted in that window.
@@ -443,6 +439,64 @@ enum PowerMonitor {
         return corrected
     }
 
+    /// The keys `health(from:)` reads flat, which macOS 27 publishes only
+    /// inside a `BatteryData` dictionary.
+    private static let liftedBatteryKeys = [
+        "DesignCapacity", "NominalChargeCapacity", "AppleRawMaxCapacity",
+        "Temperature", "PermanentFailureStatus", "BatteryCellDisconnectCount",
+    ]
+
+    /// `AppleSmartBattery`'s properties in the shape the parsers below were
+    /// written against, whichever layout the running macOS publishes.
+    ///
+    /// Up to macOS 26 everything sat on the one node. macOS 27 splits it into
+    /// a tree — `AppleSmartBatteryPack`, then `AppleSmartBatteryBank` and
+    /// `AppleSmartBatteryCell` under it, and `AppleChargerData` beside it —
+    /// and leaves the top node with the charge percentage, cycle count and
+    /// telemetry but nothing else this reads. Capacity survives only inside the
+    /// top node's `BatteryData`; temperature, the lifetime extremes and both
+    /// fault counters moved to the pack's; the charge setpoint to the charger's.
+    /// Nothing failed. The panel simply stopped showing condition, and the
+    /// service warning stopped being able to fire, which is the one reading
+    /// here whose silence reads as good news.
+    ///
+    /// Folded rather than taught to each parser, so the replayed captures from
+    /// both layouts go through the same code. The top node always wins: on a
+    /// macOS that still publishes it flat nothing here changes, and a child
+    /// only fills a key the top left empty.
+    ///
+    /// Only where there is exactly one pack and one charger. `BatteryPackCount`
+    /// and `ChargerCount` exist because more than one is possible, and with two
+    /// there is no way to tell which one the panel's single condition line
+    /// ought to describe, so neither is used.
+    static func batteryProperties(
+        top: [String: Any], packs: [[String: Any]], chargers: [[String: Any]]
+    ) -> [String: Any] {
+        var properties = top
+        if packs.count == 1, let pack = packs[0]["BatteryData"] as? [String: Any] {
+            var data = top["BatteryData"] as? [String: Any] ?? [:]
+            data.merge(pack) { current, _ in current }
+            properties["BatteryData"] = data
+        }
+        if let data = properties["BatteryData"] as? [String: Any] {
+            for key in liftedBatteryKeys where properties[key] == nil {
+                properties[key] = data[key]
+            }
+        }
+        if chargers.count == 1, let charger = chargers[0]["ChargerData"] as? [String: Any] {
+            var data = top["ChargerData"] as? [String: Any] ?? [:]
+            data.merge(charger) { current, _ in current }
+            properties["ChargerData"] = data
+        }
+        return properties
+    }
+
+    /// Reads the pack's condition out of one `AppleSmartBattery` property
+    /// dictionary, as `batteryProperties` hands it over.
+    ///
+    /// Split from `read()` so recorded captures can be replayed through it —
+    /// see `--selftest`. Capacity and cycle figures sit at the top level;
+    /// the temperature extremes are inside the gauge's own `BatteryData`.
     static func health(from properties: [String: Any]) -> BatteryHealth {
         var health = BatteryHealth()
         health.cycleCount = number(properties["CycleCount"]).map { Int($0) }
@@ -546,6 +600,35 @@ enum PowerMonitor {
         hold.inhibitReason = number(charger["ChargerInhibitReason"]).map { Int($0) }
         hold.secondsThermallyLimited = number(charger["TimeChargingThermallyLimited"]).map { Int($0) }
         return hold
+    }
+
+    private static func registryProperties(of entry: io_registry_entry_t) -> [String: Any]? {
+        var unmanaged: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(entry, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS
+        else { return nil }
+        return unmanaged?.takeRetainedValue() as? [String: Any]
+    }
+
+    /// Direct children only: the pack and the charger both hang straight off
+    /// `AppleSmartBattery`, and the banks and cells below the pack carry
+    /// nothing this reads.
+    private static func childProperties(
+        of service: io_service_t, conformingTo className: String
+    ) -> [[String: Any]] {
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == KERN_SUCCESS
+        else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var found: [[String: Any]] = []
+        var child = IOIteratorNext(iterator)
+        while child != 0 {
+            if IOObjectConformsTo(child, className) != 0, let properties = registryProperties(of: child) {
+                found.append(properties)
+            }
+            IOObjectRelease(child)
+            child = IOIteratorNext(iterator)
+        }
+        return found
     }
 
     private static func number(_ value: Any?) -> Double? {
