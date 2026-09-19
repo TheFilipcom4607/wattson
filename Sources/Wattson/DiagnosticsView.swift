@@ -44,21 +44,29 @@ struct DiagnosticTarget: Identifiable, Hashable {
     }
 }
 
+/// What the diagnostics window has to remember across its contents being
+/// thrown away on close — including a capture that is still running when the
+/// window goes, which has to finish into something that is still there.
+@MainActor
+final class DiagnosticsState: ObservableObject {
+    @Published var selectedID = ""
+    @Published var label = ""
+    @Published var isCapturing = false
+    @Published var outcome: String?
+}
+
 /// A non-guided way to collect the raw hardware evidence needed to improve
 /// support for a dock, cable or peripheral. Nothing has to be unplugged or
 /// replugged: it captures the hardware's state exactly when Save is pressed.
 struct DiagnosticsView: View {
     @ObservedObject var model: DeviceModel
+    @ObservedObject var state: DiagnosticsState
     /// Closing is the window controller's job: this view is hosted in a plain
     /// `NSWindow`, which `@Environment(\.dismiss)` knows nothing about.
     let dismiss: () -> Void
-    @State private var selectedID = ""
-    @State private var label = ""
-    @State private var isCapturing = false
-    @State private var outcome: String?
 
     private var targets: [DiagnosticTarget] { DiagnosticTarget.available(in: model) }
-    private var selection: DiagnosticTarget? { targets.first { $0.id == selectedID } }
+    private var selection: DiagnosticTarget? { targets.first { $0.id == state.selectedID } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -90,7 +98,7 @@ struct DiagnosticsView: View {
                     Text("CONNECTED ITEM")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
-                    Picker("Connected item", selection: $selectedID) {
+                    Picker("Connected item", selection: $state.selectedID) {
                         ForEach(targets) { target in
                             Text(target.title + (target.subtitle.isEmpty ? "" : " — \(target.subtitle)"))
                                 .tag(target.id)
@@ -105,7 +113,7 @@ struct DiagnosticsView: View {
                     Text("YOUR NAME FOR THIS SETUP")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
-                    TextField("e.g. Anker dock + 2 m cable", text: $label)
+                    TextField("e.g. Anker dock + 2 m cable", text: $state.label)
                         .textFieldStyle(.roundedBorder)
                 }
 
@@ -115,7 +123,7 @@ struct DiagnosticsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let outcome {
+            if let outcome = state.outcome {
                 Text(outcome)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -125,13 +133,13 @@ struct DiagnosticsView: View {
             Divider()
             HStack {
                 Button("Rescan") { model.refresh() }
-                    .disabled(isCapturing)
+                    .disabled(state.isCapturing)
                 Spacer()
-                Button(isCapturing ? "Collecting…" : "Save Diagnostic Report…") {
+                Button(state.isCapturing ? "Collecting…" : "Save Diagnostic Report…") {
                     capture()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selection == nil || label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCapturing)
+                .disabled(selection == nil || state.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.isCapturing)
             }
         }
         .padding(20)
@@ -142,22 +150,22 @@ struct DiagnosticsView: View {
     }
 
     private func synchronizeSelection() {
-        if !targets.contains(where: { $0.id == selectedID }) {
-            selectedID = targets.first?.id ?? ""
+        if !targets.contains(where: { $0.id == state.selectedID }) {
+            state.selectedID = targets.first?.id ?? ""
         }
     }
 
     private func capture() {
         guard let selection else { return }
-        let captureLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        isCapturing = true
-        outcome = nil
+        let captureLabel = state.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.isCapturing = true
+        state.outcome = nil
 
         Task {
             let report = await Task.detached(priority: .userInitiated) {
                 DiagnosticReport.capture(label: captureLabel, target: selection)
             }.value
-            isCapturing = false
+            state.isCapturing = false
             save(report: report, suggestedName: captureLabel)
         }
     }
@@ -172,7 +180,7 @@ struct DiagnosticsView: View {
 
         let response = panel.runModal()
         guard response == .OK, let url = panel.url else {
-            outcome = "Capture collected but not saved."
+            state.outcome = "Capture collected but not saved."
             return
         }
         do {
@@ -180,40 +188,68 @@ struct DiagnosticsView: View {
             // The save panel has already shown where the file went, so a success
             // line here would only ever be read by whoever opens the window next.
             // Close instead, and leave no stale outcome behind for that visit.
-            outcome = nil
+            state.outcome = nil
             dismiss()
         } catch {
-            outcome = "Could not save the report: \(error.localizedDescription)"
+            state.outcome = "Could not save the report: \(error.localizedDescription)"
         }
     }
 }
 
 @MainActor
 final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
+    /// Kept for good once made; its contents are rebuilt on each opening and
+    /// given back on each close, as Settings' and the panel's are.
     private var window: NSWindow?
+    private var hosting: NSHostingController<DiagnosticsView>?
+    private let state = DiagnosticsState()
+    /// Where the title bar was when the window closed. Giving the contents
+    /// back collapses the window, which moves it.
+    private var topLeft: NSPoint?
 
     func show(model: DeviceModel) {
         if window == nil {
-            let window = NSWindow(
-                contentViewController: NSHostingController(
-                    rootView: DiagnosticsView(model: model) { [weak self] in self?.window?.close() }
-                )
-            )
+            let hosting = makeHosting(model: model)
+            let window = NSWindow(contentViewController: hosting)
             window.styleMask = [.titled, .closable]
             window.title = "Capture Device Diagnostic"
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.center()
+            self.hosting = hosting
             self.window = window
+        } else if hosting == nil, let window {
+            let hosting = makeHosting(model: model)
+            window.contentViewController = hosting
+            self.hosting = hosting
+            window.fit(to: hosting.view, topLeft: topLeft)
         }
         model.refresh()
         ActivationPolicy.claim()
         window?.makeKeyAndOrderFront(nil)
     }
 
+    private func makeHosting(model: DeviceModel) -> NSHostingController<DiagnosticsView> {
+        NSHostingController(
+            rootView: DiagnosticsView(model: model, state: state) { [weak self] in self?.window?.close() }
+        )
+    }
+
+    /// Give the contents back once the window is closed, keeping the window.
+    /// See `SettingsWindowController.teardownContent`.
+    private func teardownContent() {
+        guard let window, !window.isVisible, hosting != nil else { return }
+        topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        hosting = nil
+        releaseHostedContent { window.contentViewController = $0 }
+    }
+
     /// Only once nothing else is left open — Settings may still be up behind
     /// this one. See `ActivationPolicy`.
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in ActivationPolicy.relinquish(after: self.window) }
+        Task { @MainActor in
+            ActivationPolicy.relinquish(after: self.window)
+            self.teardownContent()
+        }
     }
 }

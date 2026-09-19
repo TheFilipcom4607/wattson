@@ -31,12 +31,20 @@ enum SettingsTab: String, CaseIterable {
     }
 }
 
+/// What Settings has to remember across its contents being thrown away on
+/// close. Held by the window controller, for the reason `PanelState` is held
+/// by the app delegate: `@State` goes with the view.
+@MainActor
+final class SettingsState: ObservableObject {
+    /// Set when macOS refuses, which it does silently and permanently once the
+    /// user has said no — the switch alone would look broken.
+    @Published var deniedNotifications = false
+}
+
 struct SettingsView: View {
     @ObservedObject var model: DeviceModel
     let tab: SettingsTab
-    /// Set when macOS refuses, which it does silently and permanently once the
-    /// user has said no — the switch alone would look broken.
-    @State private var deniedNotifications = false
+    @ObservedObject var state: SettingsState
 
     /// Just the one pane. The switching is the window's job, through a real
     /// toolbar — SwiftUI's own `TabView` draws the old boxed tab strip on
@@ -138,11 +146,11 @@ struct SettingsView: View {
                         // and the switch goes back by itself if it is refused.
                         guard wanted else { return }
                         model.enableNotificationCenter { granted in
-                            deniedNotifications = !granted
+                            state.deniedNotifications = !granted
                         }
                     }
                 ))
-                if deniedNotifications {
+                if state.deniedNotifications {
                     Text("macOS is not letting Wattson post notifications. Turn them on for Wattson in System Settings › Notifications.")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -275,10 +283,17 @@ struct SettingsView: View {
 /// no equivalent outside a `Settings` scene, which a menu bar app does not have.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
+    /// Made on the first opening and kept for good, toolbar and all; its
+    /// contents come and go with each opening instead, as the panel's do.
     private var window: NSWindow?
+    /// Present only while the window is open. See `teardownContent`.
     private var hosting: NSHostingController<SettingsView>?
     private var model: DeviceModel?
     private var tab: SettingsTab = .menuBar
+    private let state = SettingsState()
+    /// Where the title bar was when the window closed. Giving the contents
+    /// back collapses the window, which moves it.
+    private var topLeft: NSPoint?
 
     func show(model: DeviceModel) {
         self.model = model
@@ -286,13 +301,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
             // Built from the hosting controller so the window sizes to the
             // content rather than to a hard-coded height that has to be kept
             // in step with it.
-            let hosting = NSHostingController(rootView: SettingsView(model: model, tab: tab))
-            // `resizeToFit` only runs on a tab change, which left the panes
-            // that grow *in place* clipped: the notifications pane sprouting
-            // the "macOS is not letting Wattson post notifications" line, and
-            // General swapping its Low Power text once the rule is installed.
-            // Publishing a preferred size makes the window follow those too.
-            hosting.sizingOptions = [.preferredContentSize]
+            let hosting = makeHosting(model: model)
             let window = NSWindow(contentViewController: hosting)
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -310,17 +319,33 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
             window.center()
             self.hosting = hosting
             self.window = window
+        } else if hosting == nil, let window {
+            let hosting = makeHosting(model: model)
+            window.contentViewController = hosting
+            self.hosting = hosting
+            window.fit(to: hosting.view, topLeft: topLeft)
         }
         // An .accessory app has no Dock icon, so it must ask for focus itself.
         ActivationPolicy.claim()
         window?.makeKeyAndOrderFront(nil)
     }
 
+    private func makeHosting(model: DeviceModel) -> NSHostingController<SettingsView> {
+        let hosting = NSHostingController(rootView: SettingsView(model: model, tab: tab, state: state))
+        // `resizeToFit` only runs on a tab change, which left the panes
+        // that grow *in place* clipped: the notifications pane sprouting
+        // the "macOS is not letting Wattson post notifications" line, and
+        // General swapping its Low Power text once the rule is installed.
+        // Publishing a preferred size makes the window follow those too.
+        hosting.sizingOptions = [.preferredContentSize]
+        return hosting
+    }
+
     @objc private func selectTab(_ sender: NSToolbarItem) {
         guard let tab = SettingsTab(rawValue: sender.itemIdentifier.rawValue), let model else { return }
         self.tab = tab
         window?.title = tab.title
-        hosting?.rootView = SettingsView(model: model, tab: tab)
+        hosting?.rootView = SettingsView(model: model, tab: tab, state: state)
         resizeToFit()
     }
 
@@ -329,13 +354,21 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
     /// which is what every other settings window does.
     private func resizeToFit() {
         guard let window, let hosting else { return }
-        hosting.view.layoutSubtreeIfNeeded()
-        let content = hosting.view.fittingSize
-        var frame = window.frame
-        let target = window.frameRect(forContentRect: NSRect(origin: .zero, size: content))
-        frame.origin.y += frame.height - target.height
-        frame.size = target.size
-        window.setFrame(frame, display: true, animate: true)
+        window.fit(to: hosting.view, animate: true)
+    }
+
+    /// Give the contents back once the window is closed, keeping the window.
+    ///
+    /// The panel already did this and Settings never did: the first
+    /// opening built a hosting controller that then lived as long as the app,
+    /// view tree, layer tree and all — about 5,000 live SwiftUI graph entries
+    /// measured after closing — still subscribed to the model with nothing on
+    /// screen. The window and its toolbar stay, as the popover does.
+    private func teardownContent() {
+        guard let window, !window.isVisible, hosting != nil else { return }
+        topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        hosting = nil
+        releaseHostedContent { window.contentViewController = $0 }
     }
 
     // MARK: - Toolbar
@@ -375,8 +408,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
 
     /// Drop back to menu-bar-only once the *last* window goes away, which is
     /// not necessarily this one. See `ActivationPolicy`.
+    ///
+    /// The contents go a runloop turn late, as the panel's do: AppKit is still
+    /// inside its own close when the delegate hears about it.
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in ActivationPolicy.relinquish(after: self.window) }
+        Task { @MainActor in
+            ActivationPolicy.relinquish(after: self.window)
+            self.teardownContent()
+        }
     }
 }
 

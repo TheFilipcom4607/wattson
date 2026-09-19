@@ -54,7 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shownIcon: MenuBarIcon?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        installMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
@@ -72,7 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // turns it on in Settings, including from the app's normal menu.
         model.$showDebugOptions
             .dropFirst()
-            .sink { [weak self] _ in self?.installMainMenu() }
+            .sink { [weak self] _ in
+                guard NSApp.mainMenu != nil else { return }
+                self?.installMainMenu()
+            }
             .store(in: &cancellables)
 
         updateStatusItem()
@@ -81,6 +83,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// An accessory app has no menu bar of its own, but opening Settings flips
     /// the activation policy to `.regular` — which used to hand the user a
     /// completely empty menu bar and no ⌘W to close the window with.
+    ///
+    /// Installed on the panel's first opening rather than at launch. Handing
+    /// AppKit a main menu has it fill in text input, window tab, AutoFill and
+    /// Writing Tools items with their symbol images — 0.95 MB measured — and
+    /// nothing uses the menu until something with a text field or a close box
+    /// is on screen. Every way to Settings or Diagnostics passes through the
+    /// panel or through this menu itself, so the panel opening first is enough.
     private func installMainMenu() {
         let main = NSMenu()
 
@@ -171,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard let button = statusItem.button else { return }
+        if NSApp.mainMenu == nil { installMainMenu() }
         model.refresh()
         model.isPresented = true
 
@@ -235,19 +245,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// Deliberately a runloop turn late: AppKit is still inside its own close
     /// when the delegate hears about it, and pulling the content view out from
-    /// under it there is not safe. `malloc_zone_pressure_relief` is the second
-    /// half of the job — releasing the objects only marks the pages free, and
-    /// this is what hands them back to the kernel rather than leaving them on
-    /// the heap's free list, where they still count against the process.
+    /// under it there is not safe.
     private func teardownPanelContent() {
         guard let popover, !popover.isShown else { return }
-        // An empty controller rather than nil: it collapses the popover's
-        // window to nothing, where nil leaves AppKit holding a surface the
-        // size of the panel that just closed.
-        let empty = NSViewController()
-        empty.view = NSView(frame: .zero)
-        popover.contentViewController = empty
-        malloc_zone_pressure_relief(nil, 0)
+        releaseHostedContent { popover.contentViewController = $0 }
+    }
+}
+
+/// Swap a closed surface's SwiftUI contents for nothing and hand their memory
+/// back — the panel, Settings and the diagnostics window all close this way.
+///
+/// An empty controller rather than nil: it collapses the surface's window to
+/// nothing, where nil leaves AppKit holding a backing surface the size of what
+/// just closed. `malloc_zone_pressure_relief` is the second half of the job —
+/// releasing the objects only marks the pages free, and this is what hands them
+/// back to the kernel rather than leaving them on the heap's free list, where
+/// they still count against the process.
+@MainActor
+func releaseHostedContent(_ install: (NSViewController) -> Void) {
+    let empty = NSViewController()
+    empty.view = NSView(frame: .zero)
+    install(empty)
+    malloc_zone_pressure_relief(nil, 0)
+}
+
+extension NSWindow {
+    /// Size the window to what `view` needs, keeping its title bar where it
+    /// is — or at `topLeft`, for a window whose contents were given back and
+    /// have just been rebuilt, since collapsing to nothing moved it.
+    ///
+    /// Settings windows grow downwards from the title bar; AppKit's own
+    /// resizing keeps the bottom edge still instead.
+    func fit(to view: NSView, topLeft: NSPoint? = nil, animate: Bool = false) {
+        view.layoutSubtreeIfNeeded()
+        let target = frameRect(forContentRect: NSRect(origin: .zero, size: view.fittingSize))
+        let top = topLeft ?? NSPoint(x: frame.minX, y: frame.maxY)
+        let frame = NSRect(
+            x: top.x, y: top.y - target.height, width: target.width, height: target.height
+        )
+        setFrame(frame, display: true, animate: animate)
     }
 }
 
