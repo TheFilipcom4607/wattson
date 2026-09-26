@@ -44,20 +44,32 @@ returns an empty list on recent macOS, so nothing here depends on it.
 
 ## Install
 
-From a clone of this repo:
+With Homebrew:
+
+```bash
+brew install --cask TheFilipcom4607/tap/wattson
+```
+
+Or download the DMG from [Releases](https://github.com/TheFilipcom4607/wattson/releases/latest)
+and drag Wattson to Applications. Both are signed with a Developer ID and notarized, so
+they open on a double-click.
+
+Needs an Apple silicon Mac running macOS 13 or later.
+
+### From source
 
 ```bash
 ./build.sh --install
 ```
 
 Compiles in release, assembles `Wattson.app`, signs it ad-hoc, copies it to
-`/Applications` and launches it. Drop `--install` to just build into `build/`.
-
-Needs an Apple silicon Mac running macOS 13 or later, and a Swift 5.9 toolchain.
+`/Applications` and launches it. Drop `--install` to just build into `build/`. Needs a
+Swift 5.9 toolchain.
 
 > [!TIP]
-> The build is signed ad-hoc, so Gatekeeper will refuse the first launch. Right-click
-> the app in `/Applications` and choose **Open** once, and it will start normally after that.
+> A build from source is signed ad-hoc, so Gatekeeper will refuse the first launch.
+> Right-click the app in `/Applications` and choose **Open** once, and it will start
+> normally after that.
 
 To use it as your battery item, set **Menu Bar** in Settings to **Level and
 wattage**, then turn the system's own battery off in System Settings ›
