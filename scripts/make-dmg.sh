@@ -32,14 +32,11 @@ cp -R "$APP" "$STAGE/Wattson.app"
 ln -s /Applications "$STAGE/Applications"
 # One TIFF holding both sizes, so the arrow stays sharp on Retina.
 tiffutil -cathidpicheck "$WORK/background.png" "$WORK/background@2x.png" -out "$STAGE/.background/background.tiff" 2>/dev/null
-cp "$ROOT/Resources/AppIcon.icns" "$STAGE/.VolumeIcon.icns"
 
 # Writable first, with room for the .DS_Store Finder is about to write.
 SIZE_MB=$(( $(du -sm "$STAGE" | cut -f1) + 20 ))
 hdiutil create -quiet -format UDRW -fs HFS+ -volname "$VOLNAME" -size "${SIZE_MB}m" -srcfolder "$STAGE" "$WORK/rw.dmg"
 hdiutil attach -quiet -readwrite -noverify -noautoopen "$WORK/rw.dmg"
-
-SetFile -a C "$MOUNT"
 
 echo "==> Laying out the window"
 # 640×400 of content, matching the background; the extra 32 is the title bar.
@@ -76,6 +73,11 @@ if [[ ! -f "$MOUNT/.DS_Store" ]]; then
   echo "Finder never saved the window layout." >&2
   exit 1
 fi
+
+# The volume icon goes on only now: the Finder layout above deletes .VolumeIcon.icns and
+# clears the volume's custom-icon flag, so an icon staged with the rest shipped as a generic disk.
+cp "$ROOT/Resources/AppIcon.icns" "$MOUNT/.VolumeIcon.icns"
+SetFile -a C "$MOUNT"
 
 rm -rf "$MOUNT/.fseventsd" "$MOUNT/.Trashes"
 sync
