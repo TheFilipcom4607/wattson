@@ -51,12 +51,7 @@ if (( NOTARIZE )); then
 fi
 
 echo "==> Building ${DMG}"
-STAGING=$(mktemp -d)
-trap 'rm -rf "$STAGING"' EXIT
-cp -R "$BUNDLE" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
-rm -f "$DMG"
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+scripts/make-dmg.sh "$BUNDLE" "$DMG"
 codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 
 if (( NOTARIZE )); then
@@ -75,7 +70,9 @@ CASK="${TAP_DIR}/Casks/wattson.rb"
 
 echo "==> ${DMG}"
 echo "    sha256 ${SHA}"
-if [[ -f "$CASK" ]]; then
+if (( ! NOTARIZE )); then
+    echo "==> Not notarized, so the cask is left pointing at the last release."
+elif [[ -f "$CASK" ]]; then
     sed -i '' -e "s/^  version \".*\"\$/  version \"${VERSION}\"/" \
               -e "s/^  sha256 \".*\"\$/  sha256 \"${SHA}\"/" "$CASK"
     echo "==> Updated ${CASK}"
