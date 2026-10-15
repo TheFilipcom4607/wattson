@@ -214,6 +214,13 @@ Swift 5.9 toolchain; the Command Line Tools are enough, Xcode is not required.
   and what it settled on. An achieved link is only ever reported when the port
   says Thunderbolt is genuinely running, because an idle port reports a
   convincing-looking link with nothing attached at all.
+- **What a Thunderbolt cable is actually carrying.** The port itself only ever
+  says "Thunderbolt". Underneath, a dock is a bundle of tunnels — USB 3, one
+  DisplayPort stream per monitor, PCIe — and which of them came up is the
+  difference between a working dock and one whose ethernet is dead. The panel
+  names them, and names the ones that were offered and never started rather
+  than quietly leaving them out: `USB3, DisplayPort 0, DisplayPort 1 (PCIe
+  offered, not running)`.
 - **Liquid in a connector.** Every USB-C port has a detection circuit, and macOS
   shows its own alert the moment it fires and nothing afterwards — so a port
   that has quietly stopped charging leaves nothing to go and look at. Wattson
@@ -356,10 +363,12 @@ another port. Plenty of hubs and card readers report no serial at all; theirs ke
 on the port instead, and the panel says so rather than implying a history it
 cannot stand behind. Nothing is recorded while Wattson is not running.
 
-**Hardware it has not met.** Wattson has been built against the hardware on one
-desk. If something reads wrong or not at all — a Thunderbolt dock especially —
-an issue with a `--capture` attached (read the warning above first) is the most
-useful thing you can send.
+**Hardware it has not met.** Wattson has been tested on a Thunderbolt 4 dock
+driving two monitors, a USB-C monitor with its own hub, MagSafe and USB-C
+chargers, and a pile of hubs, drives and card readers — which is still one
+desk's worth. If something reads wrong or not at all, an issue with a
+`--capture` attached (read the warning above first) is the most useful thing you
+can send.
 
 ---
 
