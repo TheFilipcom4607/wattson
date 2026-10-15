@@ -365,6 +365,9 @@ struct Connection: Identifiable {
     var negotiatedProfile: Int?
     /// PPS and AVS ranges, and any other offer the profiles above leave out.
     var additionalOffers: [SourceOffer] = []
+    /// Set only where the cable is provably the ceiling the charge is pressed
+    /// against. See `CableLimit` for everything that has to hold first.
+    var cableLimit: CableLimit?
     /// What the charger says about itself. Only the source card carries these,
     /// and only as much of them as the brick bothers to report.
     var adapterRows: [(label: String, value: String)] = []

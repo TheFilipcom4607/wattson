@@ -202,12 +202,9 @@ enum NoticeBuilder {
     /// A charger going on. Posted the moment it is plugged in, while the PD
     /// contract is still being agreed, then updated once it is.
     static func adapterAttached(_ power: PowerSnapshot, settled: Bool) -> Notice {
-        let rating = power.adapterWatts.map { String(format: "%.0f W", $0) }
-        // Before the contract lands there is no rating and no name, and the
-        // notice still has to read like a sentence.
-        let name = power.adapterModelName
-            ?? rating.map { "\($0) charger" }
-            ?? "Charger"
+        // Not "60 W charger" off the offer: a 100 W brick on a plain cable
+        // offers 60, and the contract beside the name already says so.
+        let name = power.adapterModelName ?? "Charger"
         var parts: [String] = []
         if let contract = power.negotiatedContract { parts.append(contract) }
         if let watts = power.inputWatts, watts > 0.05 {

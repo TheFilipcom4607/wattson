@@ -45,6 +45,7 @@ enum SelfTest {
         checks += headlineChecks()
         checks += packTemperatureChecks()
         checks += sourceCapabilityChecks()
+        checks += cableLimitChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -912,6 +913,150 @@ enum SelfTest {
         checks.append(Check(name: "e-marker: a cable that answered is described from its answer",
                             passed: answered.cableWiringSummary.hasPrefix("Passive · "),
                             detail: answered.cableWiringSummary))
+        return checks
+    }
+
+    // MARK: - The cable capping the charge
+
+    /// The INIU capture with one field changed: bits 6:5 of the Cable VDO
+    /// moved from 10b (5 A) to 01b (3 A). Assembled by hand because no 3 A
+    /// e-marker has ever answered on this Mac — every chip in `probes/`
+    /// declares 5 A — and changing only the current field keeps the rest of a
+    /// real node's shape around it.
+    private static let threeAmpCable: [String: Any] = {
+        var properties = identityCaptures[1].properties
+        var metadata = properties["Metadata"] as? [String: Any] ?? [:]
+        var vdos = metadata["VDOs"] as? [Data] ?? []
+        vdos[3] = vdoData([0x20, 0x40, 0x08, 0x00])
+        metadata["VDOs"] = vdos
+        properties["Metadata"] = metadata
+        return properties
+    }()
+
+    private static func cableLimitChecks() -> [Check] {
+        var checks: [Check] = []
+        let threeAmp = PortMonitor.identity(from: threeAmpCable)
+        let lenovo = PortMonitor.identity(from: identityCaptures[0].properties)
+        let iniu = PortMonitor.identity(from: identityCaptures[1].properties)
+        let belkinCharger = PortMonitor.identity(from: identityCaptures[2].properties)
+        let unread = PortMonitor.identity(from: identityCaptures[5].properties)
+
+        // The fixture is only worth anything if the edit landed on the current
+        // field and nowhere else: the captured chip it came from reads 5 A, and
+        // its speed must survive the edit untouched.
+        checks.append(Check(
+            name: "cable limit: the hand-built chip differs from its capture only in current",
+            passed: threeAmp.maxAmps == 3 && iniu.maxAmps == 5 && threeAmp.usbSpeed == iniu.usbSpeed,
+            detail: "got \(show(threeAmp.maxAmps)) A against \(show(iniu.maxAmps)) A"))
+
+        let twentyThree = PowerOption(milliamps: 3000, milliwatts: 60000)
+        func verdict(
+            usbC: Bool = true, pd: Bool = true, _ emarker: CableEMarker?,
+            contract: PowerOption? = twentyThree, input: Double? = 57.8, ceiling: Double? = 70,
+            best: Double? = nil
+        ) -> CableLimit? {
+            CableLimit.verdict(isUSBC: usbC, hasPDContract: pd, emarker: emarker,
+                               contract: contract, inputWatts: input, macCeilingWatts: ceiling,
+                               chargerBestWatts: best)
+        }
+
+        // The one case that fires: a chip stating 3 A, 20 V at 3 A, a 70 W Mac
+        // drawing all of it.
+        let fired = verdict(threeAmp)
+        checks.append(Check(
+            name: "cable limit: a 3 A chip at a 60 W contract, drawn in full, is named",
+            passed: fired == CableLimit(watts: 60, amps: 3, evidence: .chip),
+            detail: fired?.summary ?? "nil"))
+        // It says the cable is a ceiling, and admits what it cannot see.
+        checks.append(Check(
+            name: "cable limit: the line does not claim the charger had more",
+            passed: fired.map { !$0.summary.lowercased().contains("charger") } ?? false
+                && fired?.caveat.contains("cannot be seen") == true,
+            detail: fired?.summary ?? "nil"))
+
+        // Silent wherever something else explains the wattage, or nothing was
+        // stated. Real chips and real readings where there are any.
+        let silent: [(String, CableLimit?)] = [
+            // A 5 A chip at a 3 A contract: the charger, not the cable.
+            ("the captured 240 W Lenovo cable at 20 V / 3 A", verdict(lenovo)),
+            ("the captured 100 W INIU cable at 20 V / 3 A", verdict(iniu)),
+            // The one-way trap from the other side: no chip, or a chip that said
+            // nothing, is not a chip stating 3 A. The first is a real reading:
+            // a 100 W charger through a "60 W" C-to-C, no SOP' node, the SOP
+            // node's Metadata empty, every offer clamped to 3 A — and the line
+            // stays silent even though the cable really is what is holding
+            // that charger back, because nothing here can see that it is.
+            ("no e-marker answered", verdict(nil)),
+            ("the captured e-marker that answered with nothing", verdict(unread)),
+            // The Belkin 70 W charger answering at SOP has a fourth VDO to misread.
+            ("a charger's own identity standing in for a cable", verdict(belkinCharger)),
+            // Charger tops out below the cable.
+            ("a 15 V / 3 A top offer", verdict(threeAmp,
+                contract: PowerOption(milliamps: 3000, milliwatts: 45000), input: 44)),
+            ("a 20 V / 2.25 A top offer", verdict(threeAmp,
+                contract: PowerOption(milliamps: 2250, milliwatts: 45000), input: 44)),
+            // Over the chip's rating: `cableNotes` says that, and it is no limit.
+            ("a 20 V / 5 A contract over a 3 A chip", verdict(threeAmp,
+                contract: PowerOption(milliamps: 5000, milliwatts: 100000), input: 69)),
+            // The battery deciding it: the 80% hold, as measured in
+            // snapshot-after-27-fixed and snapshot-after-27.
+            ("a pack at its 80% hold drawing 27.11 W", verdict(threeAmp, input: 27.11)),
+            ("a pack at its 80% hold drawing 33.25 W", verdict(threeAmp, input: 33.25)),
+            ("no live input reading", verdict(threeAmp, input: nil)),
+            // The Mac deciding it.
+            ("a 61 W 13\" M1 Pro", verdict(threeAmp, ceiling: 61)),
+            ("a 30 W M1 Air", verdict(threeAmp, ceiling: 30)),
+            ("a Mac missing from the table", verdict(threeAmp, ceiling: nil)),
+            // Nothing asked the cable: the BMW's Brick ID / Type-C 5 V 3 A.
+            ("a Type-C current advertisement", verdict(pd: false, threeAmp,
+                contract: PowerOption(milliamps: 3000, milliwatts: 15000), input: 14)),
+            ("MagSafe", verdict(usbC: false, threeAmp)),
+            // The same-charger path. A chip declaring 5 A means the charger
+            // was free to offer more and chose not to.
+            ("a 5 A chip on a charger that offered 96 W before", verdict(lenovo, best: 96)),
+            ("a charger that never offered more than 60 W", verdict(nil, best: 60)),
+            ("a charger seen before, at its 80% hold", verdict(nil, input: 27.11, best: 96)),
+        ]
+        for (name, result) in silent {
+            checks.append(Check(name: "cable limit: silent for \(name)",
+                                passed: result == nil, detail: result?.summary))
+        }
+
+        // The common case: a plain 60 W cable with no chip, as all three on
+        // this desk were, on a charger remembered offering more. The contract
+        // and the silence are this desk's real reading on 15 October; the
+        // 96 W memory is supplied, because the charger used then publishes no
+        // serial to remember it by.
+        let remembered = verdict(nil, best: 96)
+        checks.append(Check(
+            name: "cable limit: a chipless cable on a charger seen offering 96 W is named",
+            passed: remembered == CableLimit(watts: 60, amps: 3, evidence: .sameCharger(bestWatts: 96)),
+            detail: remembered?.summary ?? "nil"))
+        checks.append(Check(
+            name: "cable limit: a chip that answered with nothing counts as no claim of 5 A",
+            passed: verdict(unread, best: 96) != nil))
+        // Memory is only consulted for a brick that can be told apart from
+        // every other: Apple's, by serial. Anything else answers nil before
+        // the stored table is read.
+        var thirdParty = PowerSnapshot()
+        thirdParty.externalConnected = true
+        thirdParty.adapterSerial = "C0FFEE"
+        thirdParty.adapterManufacturer = "Anker"
+        checks.append(Check(name: "cable limit: a third-party brick's serial is never consulted",
+                            passed: ChargerMemory.bestWatts(for: thirdParty) == nil))
+
+        // Two contracts, one measured input: nothing to attribute it to.
+        var front = PortInfo(name: "USB-C (front)", kind: .usbC, number: 1, isConnected: true)
+        front.negotiated = twentyThree
+        var rear = front
+        rear.name = "USB-C (rear)"
+        rear.number = 2
+        checks.append(Check(
+            name: "cable limit: the charging port is found when it is the only one",
+            passed: CableLimit.chargingPort(in: [front])?.name == front.name))
+        checks.append(Check(
+            name: "cable limit: two contracts leave the charging port unnamed",
+            passed: CableLimit.chargingPort(in: [front, rear]) == nil))
         return checks
     }
 

@@ -37,9 +37,11 @@ enum Entry {
             PowerAttribution.apply(to: &scan.devices, ports: ports, map: PowerAttribution.storedMap)
             PowerAttribution.diagnoseLinks(&scan.devices, ports: ports, map: PowerAttribution.storedMap)
 
-            dumpPower(PowerMonitor.read())
+            let power = PowerMonitor.read()
+            dumpPower(power)
             print("")
-            dumpPorts(ports)
+            dumpPorts(ports, inputWatts: power.inputWatts,
+                      chargerBestWatts: ChargerMemory.bestWatts(for: power))
             print("")
             dumpDevices(scan)
             print("")
@@ -159,7 +161,7 @@ enum Entry {
             print("Not charging: \(reason)")
         }
         if let rating = power.adapterWatts {
-            print(String(format: "Charger:     %.0f W rated (\(power.adapterName ?? "unknown"))", rating))
+            print(String(format: "Charger:     %.0f W offered (\(power.adapterName ?? "unknown"))", rating))
             let maker = power.adapterManufacturer ?? "not reported"
             print("Charger made by: \(maker)\(power.isAppleAdapter ? " — Apple" : "")")
             if let serial = power.adapterSerial { print("Charger serial:  \(serial)") }
@@ -180,8 +182,9 @@ enum Entry {
         }
     }
 
-    private static func dumpPorts(_ ports: [PortInfo]) {
+    private static func dumpPorts(_ ports: [PortInfo], inputWatts: Double?, chargerBestWatts: Double?) {
         print("=== PORTS ===")
+        let charging = CableLimit.chargingPort(in: ports)
         for port in ports {
             print("\(port.name): \(port.isConnected ? "connected" : "empty")")
             // Printed before the empty-port skip on purpose: half the ways this
@@ -214,6 +217,13 @@ enum Entry {
                 }
                 for note in port.cableNotes {
                     print("   Cable note:  \(note)")
+                }
+                if port.id == charging?.id, let limit = CableLimit.verdict(
+                    port: port, inputWatts: inputWatts, macCeilingWatts: MacModel.maximumChargeWatts,
+                    chargerBestWatts: chargerBestWatts
+                ) {
+                    print("   Cable limit: \(limit.summary)")
+                    print("                \(limit.caveat)")
                 }
             }
             if let supported = TransportName.best(port.transportsSupported) {

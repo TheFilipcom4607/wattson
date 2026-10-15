@@ -180,7 +180,12 @@ struct PowerSnapshot {
     /// Why the battery is not filling, when a charger is attached and it isn't.
     var chargingHold = ChargingHold()
 
-    /// What the adapter is rated for, as opposed to what it is delivering.
+    /// What the adapter is offering at the voltage this Mac chose, as opposed
+    /// to what it is delivering. Not its rating, though it used to be printed
+    /// as one: `AdapterDetails.Watts` is the chosen offer multiplied out (96 W
+    /// on the dock is 20 V x 4.8 A), and a charger facing a cable it cannot
+    /// confirm for 5 A offers 3 A at most. A 100 W charger on a plain 60 W
+    /// cable publishes 60 here, and was being called a 60 W charger.
     var adapterWatts: Double?
     var adapterName: String?
     /// The adapter as written on the adapter, set only when it publishes a real

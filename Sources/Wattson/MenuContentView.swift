@@ -777,6 +777,26 @@ private struct ConnectionCard: View {
                 .padding(.top, 6)
             }
 
+            // On the face of the card, because it answers the question the
+            // wattage beside the title raises. Not orange: nothing is broken,
+            // and the cable is doing exactly what its chip says it can.
+            if let limit = connection.cableLimit {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "cable.connector")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tint)
+                        .padding(.top, 1)
+                    Text(limit.summary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        // The half the line cannot say, for whoever hovers.
+                        .help(limit.caveat)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 6)
+            }
+
             if !connection.extraDevices.isEmpty {
                 // No spacing between rows: the tree guides are drawn per row
                 // and have to meet to read as continuous lines.

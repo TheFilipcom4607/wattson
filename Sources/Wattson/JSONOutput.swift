@@ -28,6 +28,16 @@ enum JSONOutput {
             "devices": scan.devices.map(deviceObject),
         ]
         root["deviceCount"] = scan.deviceCount
+        // Absent unless proven, like every other verdict here.
+        if let port = CableLimit.chargingPort(in: ports), let limit = CableLimit.verdict(
+            port: port, inputWatts: power.inputWatts, macCeilingWatts: MacModel.maximumChargeWatts,
+            chargerBestWatts: ChargerMemory.bestWatts(for: power)
+        ) {
+            root["cableLimit"] = [
+                "port": port.name, "watts": limit.watts, "amps": limit.amps,
+                "summary": limit.summary, "caveat": limit.caveat,
+            ] as [String: Any]
+        }
 
         // Only what has actually gone wrong. A machine where nothing ever has
         // emits no key at all rather than a wall of zeroes.
@@ -86,6 +96,9 @@ enum JSONOutput {
 
         if power.adapterWatts != nil || power.adapterName != nil {
             object["adapter"] = compact([
+                // Named before it was understood, and kept because it is an
+                // interface: this is the charger's current offer, which the
+                // cable can lower, not its rating.
                 "ratedWatts": power.adapterWatts,
                 "name": power.adapterName,
                 "model": power.adapterModelName,

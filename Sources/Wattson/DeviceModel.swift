@@ -25,7 +25,9 @@ enum TitleMode: String, CaseIterable, Identifiable {
         case .batteryLevelPower: return "Level and wattage"
         case .deviceCount: return "Device count"
         case .fastestLink: return "Fastest link"
-        case .adapterRating: return "Charger rating"
+        // The case keeps its stored name; the label stopped calling an offer
+        // a rating. See `PowerSnapshot.adapterWatts`.
+        case .adapterRating: return "Charger offer"
         case .iconOnly: return "Icon only"
         }
     }
@@ -731,6 +733,7 @@ final class DeviceModel: ObservableObject {
     private func readPower() {
         power = PowerMonitor.read()
         ports = PortMonitor.read()
+        ChargerMemory.record(power)
 
         // Accessory draw is the sum of what the USB-C rails actually deliver,
         // rather than every rail the SMC exposes.
@@ -1059,6 +1062,15 @@ final class DeviceModel: ObservableObject {
             connection.profiles = power.profiles
             connection.negotiatedProfile = power.negotiatedProfile
             connection.additionalOffers = power.sourceCapabilities?.additionalOffers ?? []
+            // `isSource` takes the first port with a contract; the verdict
+            // leans on the machine-wide input reading, so it wants the only one.
+            if CableLimit.chargingPort(in: ports)?.id == port.id {
+                connection.cableLimit = CableLimit.verdict(
+                    port: port, inputWatts: power.inputWatts,
+                    macCeilingWatts: MacModel.maximumChargeWatts,
+                    chargerBestWatts: ChargerMemory.bestWatts(for: power)
+                )
+            }
         } else if let watts = port.outputWatts, watts > 0.05 {
             connection.liveWatts = watts
             connection.wattsNote = "out"
@@ -1130,7 +1142,9 @@ final class DeviceModel: ObservableObject {
             // the title — otherwise the line would say the adapter twice.
             return [
                 titledByAdapter ? nil : described,
-                power.adapterWatts.map { String(format: "%.0f W max", $0) }
+                // "Offering", never "max": the figure is what the charger offers
+                // through this cable, which the cable can lower.
+                power.adapterWatts.map { String(format: "offering %.0f W", $0) }
             ].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         }
         if let naming {
@@ -1229,9 +1243,11 @@ final class DeviceModel: ObservableObject {
     /// of everything that has ever been plugged in keyed on that thing's own
     /// serial — so there has to be a way to empty it that is not "go and find
     /// the plist". `ConnectionLog.clear()` has existed the whole time with
-    /// nothing calling it.
+    /// nothing calling it. The best offer each Apple charger has made goes
+    /// with it, being keyed on serials too.
     func clearHistory() {
         log.clear()
+        ChargerMemory.clear()
         objectWillChange.send()
     }
 
