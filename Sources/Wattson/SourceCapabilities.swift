@@ -87,13 +87,27 @@ enum SourceOffer: Hashable {
     /// Unchecked, the first becomes a bogus 560 mW offer — and here, the second
     /// would break the comparison with the adapter's menu that the whole list
     /// is gated on.
+    ///
+    /// An offer of nothing is no offer either. On 15 October a 100 W charger
+    /// on MagSafe had the panel print "PPS 4.8–21 V up to 0 A": a word whose
+    /// voltages are the same charger's and whose current field is zero, on an
+    /// array whose fixed words matched the menu. The sibling of the stale
+    /// entries `sourceCapabilities(from:)` already guards against, most likely,
+    /// and whatever it is, a source cannot offer zero amps. Dropping the word
+    /// rather than the array is safe because the fixed words it sat beside are
+    /// still checked against the menu on their own. A Fixed word at 0 A fails
+    /// that check and takes the whole array with it, which is the silence to
+    /// want from something that disagrees with itself.
     private var isPlausible: Bool {
         switch self {
-        case .fixed(let mV, _):
-            return mV > 0
-        case .variable(let low, let high, _), .battery(let low, let high, _),
-             .pps(let low, let high, _), .eprAVS(let low, let high, _):
-            return high > 0 && low <= high
+        case .fixed(let mV, let mA):
+            return mV > 0 && mA > 0
+        case .variable(let low, let high, let mA), .pps(let low, let high, let mA):
+            return high > 0 && low <= high && mA > 0
+        case .battery(let low, let high, let mW):
+            return high > 0 && low <= high && mW > 0
+        case .eprAVS(let low, let high, let watts):
+            return high > 0 && low <= high && watts > 0
         case .sprAVS(let first, _):
             return first > 0
         }

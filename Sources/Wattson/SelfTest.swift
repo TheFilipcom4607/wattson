@@ -1922,6 +1922,9 @@ enum SelfTest {
             (0xF004_B0E1, nil, "the reserved APDO subtype 11b"),
             (0x808C_8C8C, nil, "whatcable's slot-13 filler, an inverted Variable range"),
             (0x0000_000A, nil, "a Fixed word at 0 V"),
+            (0xD3C0_9600, nil, "an EPR AVS offering 0 W"),
+            (0x9901_9000, nil, "a Variable supply offering 0 A"),
+            (0x0001_9000, nil, "a Fixed 5 V word offering 0 A"),
         ]
         for fixture in spec {
             let got = SourceOffer(word: fixture.word)?.summary
@@ -1930,6 +1933,16 @@ enum SelfTest {
                 passed: got == fixture.expected,
                 detail: "got \(got ?? "nothing")"))
         }
+
+        // Not a captured word but a reconstructed one: the panel printed
+        // "PPS 4.8–21 V up to 0 A" for a 100 W charger on 15 October, and this
+        // is the only word that decodes to that. Its voltage fields are the
+        // ones the real 4.75 A and 5 A words from this charger carry.
+        checks.append(Check(
+            name: "source caps: the 0 A PPS word shown for a 100 W charger is dropped",
+            passed: SourceOffer(word: 0xC1A4_3000) == nil
+                && SourceOffer(word: 0xC1A4_325F)?.summary == "PPS 5–21 V up to 4.75 A",
+            detail: SourceOffer(word: 0xC1A4_3000)?.summary))
         return checks
     }
 
