@@ -183,12 +183,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSApp.mainMenu == nil { installMainMenu() }
         model.refresh()
         model.isPresented = true
+        panelState.availableHeight = availablePanelHeight(below: button)
 
         let popover = panelPopover()
         popover.contentViewController = makePanelController()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Without this the first click inside the popover only brings it forward.
         popover.contentViewController?.view.window?.makeKey()
+    }
+
+    /// Room for the panel's contents between the status item and the bottom
+    /// of the screen it is on — with a menu bar on every display, the one the
+    /// click came from, which is where the item's window is. The margin covers
+    /// the popover's arrow and frame (44 pt between content and window,
+    /// measured) and a gap above the Dock.
+    private func availablePanelHeight(below button: NSStatusBarButton) -> CGFloat {
+        guard let window = button.window,
+              let screen = window.screen ?? NSScreen.main else { return 800 }
+        return window.frame.minY - screen.visibleFrame.minY - 56
     }
 
     /// The popover itself, made once and kept.

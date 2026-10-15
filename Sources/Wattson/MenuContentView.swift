@@ -18,6 +18,16 @@ final class PanelState: ObservableObject {
     /// Measured height of the scrolling body: a ScrollView has no intrinsic
     /// height and the popover sizes to fit, so it would collapse to nothing.
     @Published var bodyHeight: CGFloat = 0
+    /// Measured height of everything around the scrolling body — header,
+    /// search field, footer — which grows and shrinks with what the header
+    /// has to say, so it cannot be a constant.
+    @Published var chromeHeight: CGFloat = 0
+    /// How tall the panel's contents may be on the screen the status item is
+    /// on, set by the app delegate on each opening. A popover that does not
+    /// fit below its item is moved beside it by AppKit, arrow detached and
+    /// header under the menu bar, so the cap has to come from that screen and
+    /// not from `NSScreen.main`, which is wherever the key window is.
+    @Published var availableHeight: CGFloat = 800
 }
 
 struct MenuContentView: View {
@@ -28,23 +38,34 @@ struct MenuContentView: View {
     var onClose: () -> Void = {}
 
     private static let width: CGFloat = 380
+    private static let verticalPadding: CGFloat = 10
+    /// Height of the "more below" fade, and the room left under the last row
+    /// so that scrolling to the end brings it fully out of the fade.
+    private static let fadeHeight: CGFloat = 18
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.horizontal, 14)
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                    .padding(.horizontal, 14)
 
-            Divider().padding(.top, 10).padding(.bottom, 8)
+                Divider().padding(.top, 10).padding(.bottom, 8)
 
-            if showsSearch { searchField }
+                if showsSearch { searchField }
+            }
+            .measuringChrome()
 
             scrollingBody
 
-            Divider().padding(.vertical, 6)
-            footer
+            VStack(alignment: .leading, spacing: 0) {
+                Divider().padding(.vertical, 6)
+                footer
+            }
+            .measuringChrome()
         }
         .frame(width: Self.width)
-        .padding(.vertical, 10)
+        .padding(.vertical, Self.verticalPadding)
+        .onPreferenceChange(ChromeHeightKey.self) { ui.chromeHeight = $0 }
         // Escape clears the query first and closes the panel only once there is
         // nothing left to clear — a focused text field changes what Escape means.
         .onExitCommand {
@@ -365,10 +386,13 @@ struct MenuContentView: View {
     // MARK: - Body
 
     /// How tall the scrolling region may grow before it starts scrolling.
-    /// The old fixed 360 pt cut the device list off on every machine.
+    /// The old fixed 360 pt cut the device list off on every machine; a guess
+    /// of 380 pt for the header and footer then let a full header push the
+    /// panel to 879 pt on a 924 pt built-in screen, which no longer fits under
+    /// the menu bar. What is left after the measured chrome is what it gets.
     private var maxBodyHeight: CGFloat {
-        let visible = NSScreen.main?.visibleFrame.height ?? 800
-        return max(160, min(560, visible - 380))
+        let room = ui.availableHeight - ui.chromeHeight - Self.verticalPadding * 2
+        return max(160, min(560, room))
     }
 
     private var overflows: Bool { ui.bodyHeight > maxBodyHeight + 1 }
@@ -456,7 +480,7 @@ struct MenuContentView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 4)
+            .padding(.bottom, overflows ? Self.fadeHeight : 4)
             .background(
                 GeometryReader { geometry in
                     Color.clear.preference(key: BodyHeightKey.self, value: geometry.size.height)
@@ -470,16 +494,15 @@ struct MenuContentView: View {
         .onPreferenceChange(BodyHeightKey.self) { ui.bodyHeight = $0 }
     }
 
+    /// A fixed depth rather than a share of the height: 7% of a 560 pt list
+    /// was 40 pt, deep enough to swallow the last row whole at the end of
+    /// the scroll, which read as the list not reaching its end.
     private var bottomFade: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0),
-                .init(color: .black, location: 0.93),
-                .init(color: .clear, location: 1)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        VStack(spacing: 0) {
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: Self.fadeHeight)
+        }
     }
 
     private func toggle(_ id: String) {
@@ -834,7 +857,7 @@ private struct ConnectionCard: View {
                 if let detail = connection.detail {
                     Text(detail)
                         .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
@@ -1083,10 +1106,14 @@ private struct DeviceLine: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                // .secondary, not .tertiary: over the card's own fill, on a
+                // dark wallpaper behind the popover's vibrancy, tertiary 10 pt
+                // all but vanished, and these lines are what tell two
+                // "USB2.1 Hub" rows apart.
                 if let meta {
                     Text(meta)
                         .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -1430,6 +1457,25 @@ private struct IconButton: View {
         // as unnamed buttons, or as whatever SF Symbol name happens to be in
         // the image. The tooltip is already the right words; use them.
         .accessibilityLabel(help)
+    }
+}
+
+/// Combined height of the panel's fixed parts, header and footer, summed
+/// across the two places that report it.
+private struct ChromeHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+private extension View {
+    func measuringChrome() -> some View {
+        background(
+            GeometryReader { geometry in
+                Color.clear.preference(key: ChromeHeightKey.self, value: geometry.size.height)
+            }
+        )
     }
 }
 
