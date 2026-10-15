@@ -199,6 +199,10 @@ struct PowerSnapshot {
     }
     var profiles: [PDProfile] = []
     var negotiatedProfile: Int?
+    /// The charger's complete offer, PPS and AVS ranges included, where the
+    /// port controller's raw copy of it can be tied to the charger attached
+    /// now. Nil far more often than not, and that is the answer.
+    var sourceCapabilities: SourceCapabilities?
 
     /// The voltage the PD contract actually settled on, when there is one.
     ///
@@ -402,6 +406,7 @@ enum PowerMonitor {
                 .sorted { $0.volts < $1.volts }
             }
         }
+        snapshot.sourceCapabilities = sourceCapabilities(from: properties)
 
         // The measured input rail is part of the same 10-30 s stale copy as the
         // rest of PowerTelemetryData, and in the seconds after a charger is

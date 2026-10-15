@@ -175,6 +175,9 @@ enum Entry {
             print(String(format: "   PD %2d: %5.1f V  %.2f A  = %5.1f W%@",
                          profile.id, profile.volts, profile.amps, profile.watts, marker))
         }
+        for offer in power.sourceCapabilities?.additionalOffers ?? [] {
+            print("   Also: \(offer.summary)")
+        }
     }
 
     private static func dumpPorts(_ ports: [PortInfo]) {

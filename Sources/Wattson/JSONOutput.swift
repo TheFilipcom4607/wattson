@@ -107,6 +107,14 @@ enum JSONOutput {
                 ] as [String: Any]
             }
         }
+        // The whole offer, fixed steps included, so a script need not merge
+        // two lists. Absent, not empty, wherever it could not be tied to the
+        // charger attached now.
+        if let capabilities = power.sourceCapabilities {
+            object["pdSourceCapabilities"] = capabilities.slots.map { slot in
+                slot.offer.jsonObject.merging(["slot": slot.position]) { current, _ in current }
+            }
+        }
 
         let health = power.health
         if health.hasAnything {

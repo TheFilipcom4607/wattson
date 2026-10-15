@@ -793,7 +793,8 @@ private struct ConnectionCard: View {
                 .padding(.top, 6)
             }
 
-            if isExpanded, !detailRows.isEmpty || !connection.profiles.isEmpty || !cableNotes.isEmpty {
+            if isExpanded, !detailRows.isEmpty || !connection.profiles.isEmpty
+                || !connection.additionalOffers.isEmpty || !cableNotes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Divider().opacity(0.5).padding(.bottom, 2)
                     ForEach(Array(detailRows.enumerated()), id: \.offset) { _, row in
@@ -805,6 +806,13 @@ private struct ConnectionCard: View {
                             profiles: connection.profiles,
                             negotiated: connection.negotiatedProfile
                         )
+                    }
+                    if !connection.additionalOffers.isEmpty {
+                        DetailRow(
+                            label: "Also offers",
+                            value: connection.additionalOffers.map(\.summary).joined(separator: "\n")
+                        )
+                        .monospacedDigit()
                     }
                     // A drive plugged straight into a port names its own card
                     // and has no tree row, so this is the only place its

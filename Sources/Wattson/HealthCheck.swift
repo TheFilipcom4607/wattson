@@ -60,6 +60,7 @@ enum HealthCheck {
         say("battery.adapterWatts", present(power.adapterWatts))
         say("battery.adapterName", present(power.adapterName))
         say("battery.pdProfiles", "\(power.profiles.count)")
+        say("battery.pdSourceCapabilities", present(power.sourceCapabilities?.slots.count))
         say("battery.mac.chargeCeiling", present(MacModel.maximumChargeWatts))
 
         // Ports, and each reader that joins onto them.

@@ -44,6 +44,7 @@ enum SelfTest {
         checks += cableNoteChecks()
         checks += headlineChecks()
         checks += packTemperatureChecks()
+        checks += sourceCapabilityChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -1570,6 +1571,220 @@ enum SelfTest {
             top: batteryCapture, packs: [], chargers: [chargerCapture27]))
         checks.append(Check(name: "battery tree: a flat charger reading is not overridden",
                             passed: flatHold.chargingVoltageMV == 4249 && flatHold.notChargingReason == 128))
+        return checks
+    }
+
+    // MARK: - The charger's whole offer
+
+    /// Thirteen words, padded the way the registry pads them.
+    private static func pdoArray(_ words: [Any]) -> [Any] {
+        words + Array(repeating: 0, count: 13 - words.count) as [Any]
+    }
+
+    private static func menu(_ steps: [(mV: Int, mA: Int)]) -> [[String: Any]] {
+        steps.enumerated().map { index, step in
+            ["Index": index, "MaxVoltage": step.mV, "MaxCurrent": step.mA]
+        }
+    }
+
+    /// The Amazon Basics Thunderbolt 4 dock feeding this Mac, 25 August, macOS
+    /// 26. The adapter details and the port controller array are two separate
+    /// publications of the same offer: the menu in millivolts and milliamps,
+    /// the array as raw PD words in 50 mV and 10 mA units. Decoding the words
+    /// correctly is the only way they agree, and the whole feature is gated on
+    /// that agreement, so this fixture passing is the proof that the fixed
+    /// layout is read right.
+    private static let dockPowerCapture: [String: Any] = [
+        "ExternalConnected": true,
+        "AdapterDetails": [
+            "Watts": 85,
+            "UsbHvcHvcIndex": 3,
+            "UsbHvcMenu": menu([(5000, 3000), (9000, 3000), (15000, 3000), (20000, 4250)]),
+        ] as [String: Any],
+        "PortControllerInfo": [
+            ["PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 0,
+             "PortControllerPortPDO": pdoArray([])] as [String: Any],
+            ["PortControllerActiveContractRdo": 0x4385a168, "PortControllerNPDOs": 4,
+             "PortControllerPortPDO": pdoArray([0x2f01912c, 0x2d12c, 0x4b12c, 0x641a9])] as [String: Any],
+        ] as [[String: Any]],
+    ]
+
+    /// The same dock on macOS 27, 17 September, now rated 96 W: the 20 V step
+    /// at 4.8 A, the peak-current bits set on every word, and both controller
+    /// entries carrying the identical array and request. Why the dock changed
+    /// its offer is not recorded anywhere.
+    private static let dockPowerCapture27: [String: Any] = {
+        let words: [Any] = [0x2f11912c, 0x12d12c, 0x14b12c, 0x1641e0]
+        return [
+            "ExternalConnected": true,
+            "AdapterDetails": [
+                "Watts": 96,
+                "UsbHvcHvcIndex": 3,
+                "UsbHvcMenu": menu([(5000, 3000), (9000, 3000), (15000, 3000), (20000, 4800)]),
+            ] as [String: Any],
+            "PortControllerInfo": [
+                ["PortControllerActiveContractRdo": 0x4385a168, "PortControllerNPDOs": 4,
+                 "PortControllerPortPDO": pdoArray(words)] as [String: Any],
+                ["PortControllerActiveContractRdo": 0x4385a168, "PortControllerNPDOs": 4,
+                 "PortControllerPortPDO": pdoArray(words)] as [String: Any],
+            ] as [[String: Any]],
+        ]
+    }()
+
+    /// The 100 W charger's words, left behind in the second entry on 15
+    /// September with nothing plugged in at all. The sixth word is the only
+    /// PPS offer ever captured on this machine, and it arrives the way the
+    /// registry hands it over: sign-extended to 64 bits. Note the count says
+    /// five.
+    private static let leftoverChargerWords: [Any] = [
+        0x801912c, 0x2d12c, 0x3c12c, 0x4b12c, 0x641f4, Int64(bitPattern: 0xffff_ffff_c1a4_3264),
+    ]
+
+    /// That capture as it was: nothing attached, the adapter details empty,
+    /// and the first entry still holding the dock's array *and* its request.
+    private static let nothingAttachedCapture: [String: Any] = [
+        "ExternalConnected": false,
+        "AdapterDetails": ["FamilyCode": 0] as [String: Any],
+        "PortControllerInfo": [
+            ["PortControllerActiveContractRdo": 0x4385a168, "PortControllerNPDOs": 4,
+             "PortControllerPortPDO": pdoArray([0x2f11912c, 0x12d12c, 0x14b12c, 0x1641e0])] as [String: Any],
+            ["PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 5,
+             "PortControllerPortPDO": pdoArray(leftoverChargerWords)] as [String: Any],
+        ] as [[String: Any]],
+    ]
+
+    /// A 100 W charger with PPS plugged straight into this Mac, 15 October,
+    /// macOS 27: the first capture of a PPS offer from a charger that was
+    /// attached at the time. All three entries as they read. The first is
+    /// the charger: five fixed words that agree with the menu, and the PPS
+    /// word sixth against a count of five. The second is the dock's array left
+    /// over from an earlier session, and the third a near copy of this
+    /// charger's offer from another — every current 10-40 mA lower and the
+    /// PPS current zero — that no longer agrees with anything.
+    ///
+    /// The first entry's request word is the dock's, `0x4385a168`, naming
+    /// slot 4. The charger is delivering 20 V, which is slot 5, and the menu
+    /// says index 4. So even on the entry describing the attached charger,
+    /// the request is not a record of the contract.
+    private static let ppsChargerCapture: [String: Any] = [
+        "ExternalConnected": true,
+        "AdapterDetails": [
+            "Watts": 100,
+            "UsbHvcHvcIndex": 4,
+            "UsbHvcMenu": menu([(5000, 3000), (9000, 3000), (12000, 3000), (15000, 3000), (20000, 5000)]),
+        ] as [String: Any],
+        "PortControllerInfo": [
+            ["PortControllerActiveContractRdo": 1_132_831_080, "PortControllerNPDOs": 5,
+             "PortControllerPortPDO": pdoArray([
+                134_320_428, 184_620, 246_060, 307_500, 410_100, UInt64(18_446_744_072_663_347_807),
+             ])] as [String: Any],
+            ["PortControllerActiveContractRdo": 1_132_831_080, "PortControllerNPDOs": 4,
+             "PortControllerPortPDO": pdoArray([789_680_428, 1_233_196, 1_356_076, 1_458_656])] as [String: Any],
+            ["PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 5,
+             "PortControllerPortPDO": pdoArray([
+                134_320_424, 184_618, 246_058, 307_499, 410_099, UInt64(18_446_744_072_663_347_200),
+             ])] as [String: Any],
+        ] as [[String: Any]],
+    ]
+
+    /// The BMW's rear port through a Ugreen cable, 25 August: three fixed
+    /// offers in the controller and an empty menu.
+    private static let carPortCapture: [String: Any] = [
+        "ExternalConnected": true,
+        "AdapterDetails": [
+            "Watts": 15, "UsbHvcHvcIndex": 0xff, "UsbHvcMenu": [] as [[String: Any]],
+        ] as [String: Any],
+        "PortControllerInfo": [
+            ["PortControllerActiveContractRdo": 0, "PortControllerNPDOs": 0,
+             "PortControllerPortPDO": pdoArray([])] as [String: Any],
+            ["PortControllerActiveContractRdo": 0x3782592c, "PortControllerNPDOs": 3,
+             "PortControllerPortPDO": pdoArray([0x801912c, 0x2d0c8, 0x3c096])] as [String: Any],
+        ] as [[String: Any]],
+    ]
+
+    private static func sourceCapabilityChecks() -> [Check] {
+        var checks: [Check] = []
+        func describe(_ capabilities: SourceCapabilities?) -> String {
+            guard let capabilities else { return "nothing" }
+            return capabilities.slots.map { "\($0.position): \($0.offer.summary)" }.joined(separator: "; ")
+        }
+
+        // The fixed layout, proven against the menu the same capture publishes.
+        let dock = PowerMonitor.sourceCapabilities(from: dockPowerCapture)
+        checks.append(Check(name: "source caps: the dock's raw words agree with its own menu",
+                            passed: dock?.slots.count == 4,
+                            detail: "got \(describe(dock))"))
+        checks.append(Check(name: "source caps: a fixed-only charger gains no invented offer",
+                            passed: dock?.additionalOffers.isEmpty == true,
+                            detail: "got \(dock?.additionalOffers.map(\.summary) ?? [])"))
+        let dock27 = PowerMonitor.sourceCapabilities(from: dockPowerCapture27)
+        checks.append(Check(name: "source caps: macOS 27's twin entries, peak bits set, still agree",
+                            passed: dock27?.slots.count == 4 && dock27?.additionalOffers.isEmpty == true,
+                            detail: "got \(describe(dock27))"))
+
+        // The gate has to bite, or agreeing proves nothing.
+        var offByOne = dockPowerCapture
+        offByOne["AdapterDetails"] = [
+            "UsbHvcMenu": menu([(5000, 3000), (9000, 3000), (15000, 3000), (20000, 4260)]),
+        ] as [String: Any]
+        checks.append(Check(name: "source caps: ten milliamps off the menu and the array is not believed",
+                            passed: PowerMonitor.sourceCapabilities(from: offByOne) == nil))
+        checks.append(Check(name: "source caps: a leftover array and request with nothing attached show nothing",
+                            passed: PowerMonitor.sourceCapabilities(from: nothingAttachedCapture) == nil))
+        checks.append(Check(name: "source caps: an empty menu shows nothing, whatever the controller holds",
+                            passed: PowerMonitor.sourceCapabilities(from: carPortCapture) == nil))
+        var twins = dockPowerCapture27
+        twins["PortControllerInfo"] = [
+            ["PortControllerPortPDO": pdoArray([0x2f11912c, 0x12d12c, 0x14b12c, 0x1641e0])] as [String: Any],
+            ["PortControllerPortPDO": pdoArray([0x2f11912c, 0x12d12c, 0x14b12c, 0x1641e0, 0xC1A4213C])] as [String: Any],
+        ] as [[String: Any]]
+        checks.append(Check(name: "source caps: two agreeing entries that differ from each other show nothing",
+                            passed: PowerMonitor.sourceCapabilities(from: twins) == nil))
+
+        // A PPS charger attached for real. The fixed words agreeing with the
+        // menu is what lets the array through at all; out of three entries,
+        // only the one describing this charger may.
+        let charger = PowerMonitor.sourceCapabilities(from: ppsChargerCapture)
+        checks.append(Check(name: "source caps: of three entries, only the attached charger's agrees",
+                            passed: charger?.slots.count == 6,
+                            detail: "got \(describe(charger))"))
+        checks.append(Check(name: "source caps: an offer past PortControllerNPDOs is kept",
+                            passed: charger?.slots.last?.position == 6))
+        let extra = charger?.additionalOffers.map(\.summary) ?? []
+        checks.append(Check(name: "source caps: a real PPS word, sign-extended, reads 5–21 V up to 4.75 A",
+                            passed: extra == ["PPS 5–21 V up to 4.75 A"],
+                            detail: "got \(extra)"))
+        // The one structural check a lone word allows: every bit the PPS
+        // layout reserves (26:25, 16 and 7) is clear, in both PPS words ever
+        // captured here. Not proof of the decode, but a word in some other
+        // encoding would be unlikely to manage it twice.
+        for pps: UInt32 in [0xc1a4_325f, 0xc1a4_3264] {
+            checks.append(Check(
+                name: "source caps: captured PPS word \(String(pps, radix: 16)) leaves the reserved bits clear",
+                passed: (pps >> 25) & 0b11 == 0 && (pps >> 16) & 1 == 0 && (pps >> 7) & 1 == 0))
+        }
+
+        // No real source has ever offered any of what follows to this Mac.
+        // These words were assembled by hand from the PD R3.2 field tables,
+        // and Linux's pd.h was used as the second reading of each layout.
+        let spec: [(word: UInt32, expected: String?, what: String)] = [
+            (0xC1A4_213C, "PPS 3.3–21 V up to 3 A", "PPS, 3.3–21 V in 100 mV, 3 A in 50 mA"),
+            (0xD3C0_968C, "AVS 15–48 V up to 140 W", "EPR AVS, 9-bit maximum, PDP in watts"),
+            (0xE004_B0E1, "AVS 9–15 V up to 3 A, 15–20 V up to 2.25 A", "SPR AVS, two current tiers"),
+            (0xE004_B000, "AVS 9–15 V up to 3 A", "SPR AVS with no 20 V tier"),
+            (0x9901_912C, "Variable 5–20 V up to 3 A", "Variable supply"),
+            (0x5901_90F0, "Battery 5–20 V up to 60 W", "Battery supply, 250 mW units"),
+            (0xF004_B0E1, nil, "the reserved APDO subtype 11b"),
+            (0x808C_8C8C, nil, "whatcable's slot-13 filler, an inverted Variable range"),
+            (0x0000_000A, nil, "a Fixed word at 0 V"),
+        ]
+        for fixture in spec {
+            let got = SourceOffer(word: fixture.word)?.summary
+            checks.append(Check(
+                name: "source caps: \(fixture.what) → \(fixture.expected ?? "nothing")",
+                passed: got == fixture.expected,
+                detail: "got \(got ?? "nothing")"))
+        }
         return checks
     }
 

@@ -1058,6 +1058,7 @@ final class DeviceModel: ObservableObject {
             connection.wattsNote = "in"
             connection.profiles = power.profiles
             connection.negotiatedProfile = power.negotiatedProfile
+            connection.additionalOffers = power.sourceCapabilities?.additionalOffers ?? []
         } else if let watts = port.outputWatts, watts > 0.05 {
             connection.liveWatts = watts
             connection.wattsNote = "out"
