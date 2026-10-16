@@ -52,9 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     /// What the button's image is currently drawn from.
     private var shownIcon: MenuBarIcon?
-    /// The width the title is held to, and what it was measured for. See
-    /// `holdWidth`.
-    private var heldWidth: (key: String, width: CGFloat)?
+    /// The width the title is held to, what it was measured for, and when a
+    /// reading last needed all of it. See `holdWidth`.
+    private var heldWidth: (key: String, width: CGFloat, lastNeeded: Date)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -192,14 +192,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `alignment` says, so the neighbours held still while the battery slid a
     /// pixel or two inside the item each time a sign came or went. So it is the
     /// text that is held to one width instead — the reading, followed by
-    /// however much space makes it as wide as the mode's widest ordinary
-    /// string. With contents that never change width, nothing can move.
+    /// however much space makes it as wide as the mode's templates (see
+    /// `DeviceModel.titleTemplates`). With contents that never change width,
+    /// nothing can move.
     ///
-    /// Measured again only when what it was measured for changes — the mode,
-    /// the icon, or the charger coming and going, which changes what the mode
-    /// can say. Between those it only ever grows: a reading wider than the
-    /// templates widens the item once and keeps it there, rather than letting
-    /// it move each time a reading crosses back.
+    /// Measured afresh when what it was measured for changes — the mode, the
+    /// icon, or the charger coming and going, which changes what the mode can
+    /// say. Otherwise a reading that needs more room widens the item at once,
+    /// and the item gives the room back only after a minute in which nothing
+    /// needed it. Growing for good was tried first: one launch-time spike past
+    /// 10 W left a digit of empty menu bar after "68% -8.7 W" for the rest of
+    /// the session. A minute is far longer than the seconds a load hovering
+    /// around 10 W takes to cross back, so that still moves the bar once
+    /// rather than every time, and settling down costs one move, not a gap.
     private func holdWidth(_ button: NSStatusBarButton) {
         let shown = button.title
         guard model.titleText != nil, let font = button.font, let last = shown.indices.last else {
@@ -212,15 +217,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = [
             model.titleMode.rawValue,
             "\(model.power.externalConnected)",
-            "\((model.power.adapterWatts ?? 0) >= 99.995)",
             button.image.map { "\($0.size.width)" } ?? "-",
         ].joined(separator: " ")
         let prefix = button.image == nil ? "" : " "
-        let templates = heldWidth?.key == key
-            ? [heldWidth?.width ?? 0]
-            : model.titleTemplates(for: model.titleMode).map { width(prefix + $0) }
-        let held = max(width(shown), templates.max() ?? 0)
-        heldWidth = (key, held)
+        let needed = max(
+            width(shown),
+            model.titleTemplates(for: model.titleMode).map { width(prefix + $0) }.max() ?? 0
+        )
+        let now = Date()
+        let held: CGFloat
+        if let previous = heldWidth, previous.key == key, needed < previous.width - 0.01,
+           now.timeIntervalSince(previous.lastNeeded) < 60 {
+            held = previous.width
+        } else {
+            held = needed
+            heldWidth = (key, needed, now)
+        }
 
         // Kerning after the last character is space that belongs to the text,
         // so it counts towards the button's size like any other.

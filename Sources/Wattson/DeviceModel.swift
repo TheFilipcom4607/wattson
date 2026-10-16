@@ -370,14 +370,14 @@ final class DeviceModel: ObservableObject {
 
         case .livePower:
             guard let watts = livePowerWatts else { return "—" }
-            return format(watts)
+            return Self.watts(watts, places: 2)
 
         case .batteryFlow:
             // Always signed: -10.27 W draining, +10.27 W charging. A resting
             // battery would otherwise land on "-0.00 W".
             guard let watts = power.batteryWatts else { return "—" }
             if abs(watts) < 0.005 { return "0.00 W" }
-            return String(format: "%+.2f W", watts)
+            return Self.watts(watts, places: 2, signed: true)
 
         case .batteryLevel:
             guard let percent = power.batteryPercent else { return "—" }
@@ -390,7 +390,7 @@ final class DeviceModel: ObservableObject {
             // decimal of a battery flow changes several times a second anyway.
             guard let percent = power.batteryPercent else { return "—" }
             guard let watts = power.batteryWatts else { return "\(percent)%" }
-            let flow = abs(watts) < 0.05 ? "0.0 W" : String(format: "%+.1f W", watts)
+            let flow = abs(watts) < 0.05 ? "0.0 W" : Self.watts(watts, places: 1, signed: true)
             return "\(percent)% \(flow)"
 
         case .batteryLevelPower:
@@ -400,7 +400,7 @@ final class DeviceModel: ObservableObject {
             // doing. On battery there is only one figure, so it is that one.
             guard let percent = power.batteryPercent else { return title(for: .livePower) }
             guard let watts = livePowerWatts else { return "\(percent)%" }
-            return "\(percent)% " + String(format: "%.1f W", watts)
+            return "\(percent)% " + Self.watts(watts, places: 1)
 
         case .deviceCount:
             let count = result.deviceCount
@@ -416,41 +416,66 @@ final class DeviceModel: ObservableObject {
         }
     }
 
-    /// The widest strings a mode puts up in ordinary use, for the menu bar to
-    /// hold room for.
+    /// The strings the menu bar holds room for in a mode.
     ///
     /// Monospaced digits stopped 9.81 W and 9.86 W being different widths, but
     /// not 9.8 W and 10.2 W, or a sign appearing — and the item resizing moves
     /// everything to the left of it. Every digit is the same width in that
     /// font, so an 8 stands for any of them.
     ///
-    /// Deliberately the common case rather than the theoretical widest. A
-    /// three-digit input only happens on a charger offering 100 W or more, so
-    /// the charger's own offer decides that; otherwise room for 100 W would be
-    /// a permanent gap on every Mac on a 30 W brick. Anything wider than the
-    /// template still fits — the item grows to it and stays grown, so it moves
-    /// once rather than every time a reading crosses the line.
+    /// They are the reading as it stands, with as many digits as it has now.
+    /// Fixed strings sized for the busy case — "100% +88.8 W" — were tried
+    /// first, and at 70% on battery drawing 8.8 W they left two digits of empty
+    /// menu bar after the reading, all day, for a 100% and a 10 W that might
+    /// never come. A percentage that does gain a digit widens the item, which
+    /// stays wide until a minute passes without needing it (see
+    /// `AppDelegate.holdWidth`). The wattage cannot gain one below 100 W: see
+    /// `watts(_:places:signed:)`.
+    ///
+    /// On a charger a flow flips between charging and draining, and "0.0 W"
+    /// has no sign, so both signs are held for there. On battery it can only
+    /// go down, and room for a "+" was 2 pt of gap that never filled.
     func titleTemplates(for mode: TitleMode) -> [String] {
-        let plugged = power.externalConnected
-        let wide = (power.adapterWatts ?? 0) >= 99.995
+        guard let shown = title(for: mode) else { return [] }
+        let digits = String(shown.map { $0.isNumber ? "8" : $0 })
+        let places: Int
         switch mode {
-        case .iconOnly: return []
-        case .livePower: return [plugged ? (wide ? "888.88 W" : "88.88 W") : "-88.88 W"]
-        case .batteryFlow: return ["+88.88 W", "-88.88 W"]
-        case .batteryLevel: return ["100%"]
-        case .batteryLevelFlow: return ["100% +88.8 W", "100% -88.8 W"]
-        case .batteryLevelPower:
-            guard power.batteryPercent != nil else { return titleTemplates(for: .livePower) }
-            return [plugged ? (wide ? "100% 888.8 W" : "100% 88.8 W") : "100% -88.8 W"]
-        case .deviceCount: return ["8 Devices"]
-        case .fastestLink: return ["888 Mbps"]
-        case .adapterRating: return [plugged ? "888 W" : "No charger"]
+        case .livePower, .batteryFlow: places = 2
+        case .batteryLevelFlow, .batteryLevelPower: places = 1
+        default: return [digits]
+        }
+        // The wattage is the word before the unit. Its template is the widest
+        // thing `watts(_:places:)` writes below 100 W, whatever it reads now.
+        var words = digits.components(separatedBy: " ")
+        guard let unit = words.lastIndex(of: "W"), unit > 0 else { return [digits] }
+        let number = "8." + String(repeating: "8", count: places)
+        let flips = (mode == .batteryFlow || mode == .batteryLevelFlow) && power.externalConnected
+        let signs = flips
+            ? ["+", "-"]
+            : [words[unit - 1].hasPrefix("-") ? "-" : ""]
+        return signs.map { sign in
+            words[unit - 1] = sign + number
+            return words.joined(separator: " ")
         }
     }
 
-    /// Match the panel exactly: if it reads 2.34 W, so does the menu bar.
-    private func format(_ watts: Double) -> String {
-        String(format: "%.2f W", watts)
+    /// A wattage for the menu bar, as many characters long at 12 W as at 9 W.
+    ///
+    /// `places` decimals below 10 W, one fewer for each digit gained in front
+    /// of the point: 9.81 W, 10.2 W, 102 W. The panel's own 10.23 W stays
+    /// exact; the bar gives up a decimal it has no room for. Held to the full
+    /// number of decimals, the reading was a character longer past 10 W, and
+    /// an idle MacBook Air goes past 10 W every few seconds — 11.6, 18.7 and
+    /// 10.2 W within one minute of `--watch` — so the bar either moved that
+    /// often or carried a digit of empty space for it.
+    nonisolated static func watts(_ value: Double, places: Int, signed: Bool = false) -> String {
+        var decimals = places
+        let limit = pow(10, Double(places + 1))
+        // Decided on the rounded figure, so 9.996 is "10.0", not "10.00".
+        while decimals > 0, (abs(value) * pow(10, Double(decimals))).rounded() >= limit {
+            decimals -= 1
+        }
+        return String(format: signed ? "%+.*f W" : "%.*f W", decimals, value)
     }
 
     /// The gauge's own runtime estimate, and only ever the one that applies.

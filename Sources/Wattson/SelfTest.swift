@@ -47,6 +47,7 @@ enum SelfTest {
         checks += packTemperatureChecks()
         checks += sourceCapabilityChecks()
         checks += cableLimitChecks()
+        checks += menuBarWattsChecks()
 
         let failures = checks.filter { !$0.passed }
         for check in checks {
@@ -1058,6 +1059,42 @@ enum SelfTest {
         checks.append(Check(
             name: "cable limit: two contracts leave the charging port unnamed",
             passed: CableLimit.chargingPort(in: [front, rear]) == nil))
+        return checks
+    }
+
+    // MARK: - Menu bar wattage
+
+    /// Every wattage the bar can show below 10^(places+1) W carries exactly
+    /// places+1 digits, which is what keeps it one width, and still reads back
+    /// to within half its last place of the figure it was made from — so a
+    /// formatter that held its width by losing the value fails as surely as
+    /// one that let the width move.
+    private static func menuBarWattsChecks() -> [Check] {
+        var checks: [Check] = []
+        for places in [1, 2] {
+            // At this even a whole number rounds up to another digit, so the
+            // sweep stays strictly inside it.
+            let ceiling = pow(10, Double(places + 1)) - 0.5
+            var drifted: [String] = []
+            var value = -ceiling + 0.0137
+            while value < ceiling {
+                let text = DeviceModel.watts(value, places: places, signed: true)
+                let number = text.dropLast(2)
+                let digits = number.filter(\.isNumber).count
+                let decimals = number.split(separator: ".").dropFirst().first?.count ?? 0
+                let error = abs((Double(number) ?? .nan) - value)
+                if digits != places + 1 || !(error <= pow(10, -Double(decimals)) / 2 + 1e-9) {
+                    drifted.append(text)
+                }
+                value += 0.0137
+            }
+            checks.append(Check(
+                name: "menu bar watts: \(places + 1) digits, true to the last place, at \(places) decimals",
+                passed: drifted.isEmpty))
+        }
+        checks.append(Check(
+            name: "menu bar watts: rounding up past 10 W drops a decimal (9.996 is 10.0 W)",
+            passed: DeviceModel.watts(9.996, places: 2) == "10.0 W"))
         return checks
     }
 
