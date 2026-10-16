@@ -371,7 +371,11 @@ enum PowerMonitor {
         if let watts = smc.systemWatts { snapshot.systemLoadWatts = watts }
         if let watts = smc.adapterWatts { snapshot.inputWatts = watts }
         if let flow = smc.batteryFlow { snapshot.batteryWatts = flow }
-        if smc.systemWatts != nil {
+        // Only an input key that answered gets to overrule the registry on
+        // whether a charger is attached. Gated on the load key alone, a Mac
+        // that publishes PSTR but not PDTR read as having no adapter at all —
+        // "on battery", no charger card — on every brick plugged into it.
+        if smc.systemWatts != nil, smc.adapterWatts != nil {
             snapshot.externalConnected = smc.hasAdapter
             // Keep volts/amps consistent with the fresher wattage.
             if let watts = smc.adapterWatts, let volts = snapshot.inputVolts, volts > 1 {
