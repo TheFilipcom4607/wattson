@@ -410,17 +410,29 @@ private enum IOReport {
     /// the result: the functions want the CFDictionary they handed out, not a
     /// Swift value that merely prints the same.
     static func channels(in sample: CFDictionary) -> [CFDictionary] {
-        let key = Unmanaged.passUnretained("IOReportChannels" as CFString).toOpaque()
-        guard let raw = CFDictionaryGetValue(sample, key) else { return [] }
+        guard let raw = CFDictionaryGetValue(sample, Unmanaged.passUnretained(channelsKey).toOpaque())
+        else { return [] }
         let array = unsafeBitCast(raw, to: CFArray.self)
         return (0..<CFArrayGetCount(array)).map {
             unsafeBitCast(CFArrayGetValueAtIndex(array, $0), to: CFDictionary.self)
         }
     }
 
+    /// Held for the life of the run. Built inline, the bridged string had
+    /// nothing keeping it alive once `passUnretained` had taken its address, so
+    /// the dictionary could be handed a key that was already freed.
+    private static let channelsKey = "IOReportChannels" as CFString
+
+    /// A Get function, so the string is borrowed from the channel, not owned.
+    ///
+    /// This used to take it as retained, releasing one reference the app never
+    /// had on every channel of every sample. On macOS 27 the names are immortal
+    /// constants and the extra release does nothing, which is why it never
+    /// showed here; on macOS 15 and 26 they are ordinary objects, and the panel
+    /// crashed within seconds of opening (issues #1 and #2).
     static func channelName(_ channel: CFDictionary) -> String? {
         guard let symbols else { return nil }
-        return symbols.channelGetName(channel)?.takeRetainedValue() as String?
+        return symbols.channelGetName(channel)?.takeUnretainedValue() as String?
     }
 
     static func stateCount(_ channel: CFDictionary) -> Int32 {
