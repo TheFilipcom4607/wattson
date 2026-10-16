@@ -111,7 +111,8 @@ final class DeviceModel: ObservableObject {
         // The charger being unable to keep up shows as the battery going down
         // while plugged in — the same measured fact the drain notice is built
         // on, not a comparison against what a bigger brick could have done.
-        if power.externalConnected, let watts = power.batteryWatts, watts < -1 {
+        if power.externalConnected, power.cellFlow == .draining,
+           let watts = power.batteryWatts, watts < -1 {
             return "The charger is not keeping up"
         }
         return nil
@@ -452,7 +453,9 @@ final class DeviceModel: ObservableObject {
         // this earns its place only when neither is true, which is the case of
         // a charger attached and the cell going down anyway.
         let inBar = power.allocation?.segments.contains { $0.id == "battery" } ?? false
-        if power.externalConnected, !inBar,
+        // And only when the cell is really moving: see `PowerSnapshot.cellFlow`
+        // for why the flow alone cannot say so on a charger.
+        if power.externalConnected, !inBar, power.cellFlow != .resting,
            let watts = power.batteryWatts, abs(watts) > 0.05 {
             parts.append(String(format: "%+.2f W", watts))
         }
@@ -481,10 +484,14 @@ final class DeviceModel: ObservableObject {
 
     /// Power going into the cell, which is what the bolt in the icon means.
     /// The registry's own flag lags a plug or unplug by a tick, so the measured
-    /// flow decides wherever there is one.
+    /// flow decides wherever there is one — on a charger, the terminals' flow,
+    /// or a Mac held at its limit put the bolt in and out of the menu bar.
     var isCharging: Bool {
-        if let watts = power.batteryWatts, abs(watts) > 0.05 { return watts > 0 }
-        return power.isCharging
+        switch power.cellFlow {
+        case .charging: return true
+        case .draining: return false
+        case .resting, nil: return power.isCharging
+        }
     }
 
     /// Every power mode gets the real battery, drawn to its actual level, so

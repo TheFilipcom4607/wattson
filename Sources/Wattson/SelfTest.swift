@@ -40,6 +40,7 @@ enum SelfTest {
         checks += emarkerSilenceChecks()
         checks += tunnelChecks()
         checks += staleInputChecks()
+        checks += cellFlowChecks()
         checks += linkBottleneckChecks()
         checks += cableNoteChecks()
         checks += headlineChecks()
@@ -1178,6 +1179,171 @@ enum SelfTest {
         missing.negotiatedProfile = 9
         checks.append(Check(name: "input: an index with no profile behind it is not a voltage",
                             passed: PowerMonitor.correctStaleInput(missing).inputVolts == 0))
+        return checks
+    }
+
+    // MARK: - Holding, charging or draining
+
+    /// Lines from `--watch` on this Mac, held at an 80% charge limit on a
+    /// 20 V contract, 16 October: input, load, the flow computed from them, and
+    /// the pack's terminals read in the same second. The SMC's load is one
+    /// sample behind its input, so each "flow" is the input's change since the
+    /// second before. Self-validating in the same spirit as the identity
+    /// fixtures: the previous line's input is carried alongside, and it has to
+    /// equal this line's load for the fixture to describe the artefact at all.
+    private static let heldAtLimit: [(previousIn: Double, input: Double, load: Double, packMilliamps: Double)] = [
+        (4.40, 10.69, 4.40, 0),    // load stepping up: +6.29 W "into" the cell
+        (9.49, 3.15, 9.49, 0),     // and back down: -6.34 W "out" of it
+        (3.25, 3.12, 3.25, 0),     // quiet: -0.13 W, which flipped the word
+        (17.08, 16.10, 17.08, 0),  // 17 W of load: -0.98 W
+        (3.24, 3.27, 3.24, 0),     // inside the old deadband already: +0.03 W
+    ]
+    private static let heldPackMillivolts = 12_557.0
+
+    /// PDTR, PSTR, B0AV and B0AC from the raw SMC section of each capture.
+    private static let heldCaptures: [(name: String, pdtr: Double, pstr: Double, b0av: Double, b0ac: Double)] = [
+        ("100 W charger, first 60 W cable", 16.701267, 10.894113, 12_557, 0),
+        ("100 W charger, second 60 W cable", 13.525156, 11.485348, 12_559, 0),
+        ("Thunderbolt 4 dock", 11.835917, 5.4795504, 12_576, 0),
+        ("after-27", 40.590015, 39.089035, 12_500, 0),
+        ("after-27-fixed", 26.32318, 32.2086, 12_500, 0),
+    ]
+
+    private static func cellFlowChecks() -> [Check] {
+        var checks: [Check] = []
+
+        for line in heldAtLimit {
+            var held = PowerSnapshot()
+            held.externalConnected = true
+            held.batteryPercent = 80
+            held.inputWatts = line.input
+            held.systemLoadWatts = line.load
+            held.batteryWatts = line.input - line.load
+            held.batteryVolts = heldPackMillivolts
+            held.batteryAmps = line.packMilliamps
+            let flow = String(format: "%+.2f W", line.input - line.load)
+            checks.append(Check(
+                name: "cell: held at a limit, \(flow) of lag reads as holding",
+                passed: line.previousIn == line.load && held.batteryState == "holding",
+                detail: "got \(held.batteryState ?? "nil"), previous input \(line.previousIn) against load \(line.load)"))
+            // And the number the reader hands on is the terminals', not the lag.
+            let terminals = SMCMonitor.BatteryReading(volts: heldPackMillivolts, amps: line.packMilliamps)
+            let watts = PowerMonitor.batteryWatts(
+                computed: line.input - line.load, externalConnected: true, terminals: terminals)
+            checks.append(Check(
+                name: "flow: held at a limit, \(flow) of lag becomes the terminals' 0 W",
+                passed: watts == 0,
+                detail: "got \(show(watts))"))
+            // Nor does the bar grow a battery segment out of the lag.
+            let charging = held.allocation?.segments.contains { $0.id == "battery" } ?? false
+            checks.append(Check(
+                name: "cell: held at a limit, \(flow) puts no battery in the bar",
+                passed: !charging))
+        }
+
+        // The same at a single instant, from the raw captures in `probes/`:
+        // PDTR, PSTR, B0AV and B0AC exactly as the SMC published them. Every
+        // one was taken at an 80% hold, so the cell carries nothing, and the
+        // difference between the first two is whatever the lag left in it.
+        for capture in heldCaptures {
+            let terminals = SMCMonitor.BatteryReading(volts: capture.b0av, amps: capture.b0ac)
+            let watts = PowerMonitor.batteryWatts(
+                computed: capture.pdtr - capture.pstr, externalConnected: true, terminals: terminals)
+            checks.append(Check(
+                name: "flow: \(capture.name), \(String(format: "%+.2f W", capture.pdtr - capture.pstr)) computed at a hold reads 0 W",
+                passed: watts == 0,
+                detail: "got \(show(watts))"))
+        }
+
+        // Charging, BMW M340i rear port, 25 August: 13.95 W in, 9.33 W load,
+        // and 334 mA into a 12.312 V pack. The terminals' 4.11 W is the figure;
+        // the 4.62 W difference is within the charger's own loss of it.
+        let bmw = SMCMonitor.BatteryReading(volts: 12_312, amps: 334)
+        let bmwWatts = PowerMonitor.batteryWatts(
+            computed: 13.948727 - 9.325635, externalConnected: true, terminals: bmw)
+        checks.append(Check(
+            name: "flow: charging on the BMW port reads the terminals' 4.11 W",
+            passed: bmwWatts.map { abs($0 - 4.112) < 0.001 } ?? false,
+            detail: "got \(show(bmwWatts))"))
+
+        // Off a charger the computed flow stands, terminals or not: before-27,
+        // on battery, 11.86 W of load and the pack giving 1187 mA.
+        let unplugged = SMCMonitor.BatteryReading(volts: 11_795, amps: -1_187)
+        let unpluggedWatts = PowerMonitor.batteryWatts(
+            computed: 0.00046655253 - 11.862187, externalConnected: false, terminals: unplugged)
+        checks.append(Check(
+            name: "flow: on battery the computed flow is kept",
+            passed: unpluggedWatts == 0.00046655253 - 11.862187,
+            detail: "got \(show(unpluggedWatts))"))
+
+        // And a charger whose terminals did not answer keeps the computed flow
+        // rather than reporting nothing.
+        let silent = PowerMonitor.batteryWatts(
+            computed: 1.25, externalConnected: true, terminals: SMCMonitor.BatteryReading())
+        checks.append(Check(name: "flow: on a charger with no terminals, the computed flow stays",
+                            passed: silent == 1.25, detail: "got \(show(silent))"))
+
+        // A real drain on a charger still says so. Constructed, not captured:
+        // the drain seen on 15 October (a 34.6 W load on 21.5 W) predates the
+        // terminal column. 1.05 A out of a 12.4 V pack is 13 W.
+        var draining = PowerSnapshot()
+        draining.externalConnected = true
+        draining.inputWatts = 21.5
+        draining.systemLoadWatts = 34.6
+        draining.batteryWatts = -13.1
+        draining.batteryVolts = 12_400
+        draining.batteryAmps = -1_050
+        checks.append(Check(name: "cell: a real drain on a charger reads as draining",
+                            passed: draining.batteryState == "draining",
+                            detail: "got \(draining.batteryState ?? "nil")"))
+
+        // And the terminals win over the flow in the other direction too: a lag
+        // spike that makes the flow look like charge going in does not make a
+        // draining cell read as charging.
+        var masked = draining
+        masked.batteryWatts = 2.4
+        checks.append(Check(name: "cell: a lag spike does not hide a drain the terminals see",
+                            passed: masked.batteryState == "draining",
+                            detail: "got \(masked.batteryState ?? "nil")"))
+
+        // Genuinely charging, as measured on this Mac while charging (12.370 V
+        // x 3.183 A at the pack).
+        var charging = PowerSnapshot()
+        charging.externalConnected = true
+        charging.inputWatts = 45.9
+        charging.systemLoadWatts = 6.84
+        charging.batteryWatts = 39.06
+        charging.batteryVolts = 12_370
+        charging.batteryAmps = 3_183
+        checks.append(Check(name: "cell: charging on a charger reads as charging",
+                            passed: charging.batteryState == "charging"
+                                && charging.allocation?.segments.contains { $0.id == "battery" } == true,
+                            detail: "got \(charging.batteryState ?? "nil")"))
+
+        // Without terminals to read, a charger falls back to the flow and the
+        // deadband it always had, rather than to silence or a guess.
+        var noTerminals = PowerSnapshot()
+        noTerminals.externalConnected = true
+        noTerminals.batteryWatts = -0.13
+        checks.append(Check(name: "cell: on a charger with no terminals, the flow still decides",
+                            passed: noTerminals.batteryState == "draining",
+                            detail: "got \(noTerminals.batteryState ?? "nil")"))
+
+        // Off the charger nothing changed. The flow is minus the load there,
+        // with no input to lag behind, and it is read exactly as before even
+        // when the terminals say something slightly different.
+        var onBattery = PowerSnapshot()
+        onBattery.externalConnected = false
+        onBattery.batteryWatts = -0.13
+        onBattery.batteryVolts = 12_557
+        onBattery.batteryAmps = 0
+        checks.append(Check(name: "cell: on battery, the flow decides as it always did",
+                            passed: onBattery.batteryState == "draining",
+                            detail: "got \(onBattery.batteryState ?? "nil")"))
+        onBattery.batteryWatts = 0.03
+        checks.append(Check(name: "cell: on battery, a flow inside the deadband is idle",
+                            passed: onBattery.batteryState == "idle",
+                            detail: "got \(onBattery.batteryState ?? "nil")"))
         return checks
     }
 

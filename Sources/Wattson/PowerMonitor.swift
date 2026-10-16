@@ -228,10 +228,44 @@ struct PowerSnapshot {
         return String(format: "%+.2f W", watts)
     }
 
+    /// Which way charge is actually moving through the cell.
+    enum CellFlow: Equatable { case charging, draining, resting }
+
+    /// Below this the cell is called resting. Applied to the terminals on a
+    /// charger and to the computed flow off one, the same figure it always was.
+    static let restingWatts = 0.05
+
+    /// On a charger, the pack's own terminals decide.
+    ///
+    /// Which is usually what `batteryWatts` already is there — see
+    /// `PowerMonitor.batteryWatts(computed:externalConnected:terminals:)` for
+    /// the SMC lag that made the computed flow flip the panel between "holding"
+    /// and "draining" every second at a charge limit, and for the measurement.
+    /// It is asked again here because the terminals may only have answered
+    /// from the registry, whose copy is stale but whose sign is still right:
+    /// `InstantAmperage` read 0 in 20 of 20 samples at that hold.
+    ///
+    /// Off the charger nothing changes: there is no input to lag behind, the
+    /// flow is minus the load, and it has always been read that way.
+    var cellFlow: CellFlow? {
+        if externalConnected, let volts = batteryVolts, let amps = batteryAmps {
+            return Self.cellFlow(watts: volts * amps / 1_000_000)
+        }
+        return batteryWatts.map(Self.cellFlow(watts:))
+    }
+
+    private static func cellFlow(watts: Double) -> CellFlow {
+        if abs(watts) < restingWatts { return .resting }
+        return watts > 0 ? .charging : .draining
+    }
+
     var batteryState: String? {
-        guard let watts = batteryWatts else { return nil }
-        if abs(watts) < 0.05 { return externalConnected ? "holding" : "idle" }
-        return watts > 0 ? "charging" : "draining"
+        guard batteryWatts != nil, let flow = cellFlow else { return nil }
+        switch flow {
+        case .resting: return externalConnected ? "holding" : "idle"
+        case .charging: return "charging"
+        case .draining: return "draining"
+        }
     }
 
     /// "-10.27 W · draining · 100%"
@@ -257,7 +291,9 @@ struct PowerSnapshot {
             segments.append(.init(id: "accessories", label: "Accessories", watts: accessories))
         }
         // Charge going into the cell is the third place the wall's power lands.
-        if externalConnected, let battery = batteryWatts, battery > 0.05 {
+        // Only when the terminals say it is: held at a limit, the computed
+        // flow alone put a battery segment in and out of the bar every second.
+        if externalConnected, cellFlow == .charging, let battery = batteryWatts, battery > 0.05 {
             segments.append(.init(id: "battery", label: "Battery", watts: battery))
         }
 
@@ -350,14 +386,6 @@ enum PowerMonitor {
         // it does for the wattage above — the registry copy is 10-30 s stale,
         // and watched over three seconds with nothing attached it held -401 mA
         // while the SMC reported -410, -554 and -455 in turn.
-        //
-        // These and `batteryWatts` are separate SMC samples, so under a load
-        // that is moving fast they can disagree by a lot for an instant: taken
-        // during a compile, 46.51 W arriving against a 32.77 W load implied
-        // 13.74 W into the cell while the terminals read 30.9 W. Neither is
-        // wrong. On a quiet machine they tie out — 45.9 in less 6.84 consumed
-        // is 39.06 W, against 12.370 V x 3.183 A = 39.4 W measured at the pack,
-        // with the registry agreeing at 39.0 W.
         let pack = SMCMonitor.battery()
         snapshot.batteryVolts = pack.volts ?? number(properties["Voltage"])
         snapshot.batteryAmps = pack.amps
@@ -365,6 +393,11 @@ enum PowerMonitor {
             ?? number(properties["Amperage"])
         snapshot.minutesToEmpty = pack.minutesToEmpty
         snapshot.minutesToFull = pack.minutesToFull
+        snapshot.batteryWatts = batteryWatts(
+            computed: snapshot.batteryWatts,
+            externalConnected: snapshot.externalConnected,
+            terminals: pack
+        )
 
         // Fall back to battery voltage x amperage if telemetry is unavailable.
         if snapshot.batteryWatts == nil,
@@ -433,6 +466,44 @@ enum PowerMonitor {
         snapshot = correctStaleInput(snapshot)
 
         return snapshot
+    }
+
+    /// The battery's flow: on a charger, what the pack's terminals measure;
+    /// off one, the input less the load, as it always was.
+    ///
+    /// Input less load was the figure everywhere until 16 October, and on a
+    /// charger it is wrong in a way no smoothing fixes: the SMC publishes PSTR
+    /// one sample behind PDTR. Watched with `--watch` at an 80% charge limit,
+    /// 109 of 109 lines had this second's load equal to the previous second's
+    /// input to the hundredth of a watt, so with the cell held the "flow" was
+    /// the change in input since the second before — across 338 samples a
+    /// standard deviation of 1.72 W and swings of ±12.6 W when the load
+    /// stepped, while B0AC read exactly 0 mA in all 229 that carried it. The
+    /// raw captures in `probes/` say the same at a single instant: five taken
+    /// at a hold have the difference anywhere from -5.9 to +6.4 W and every
+    /// one has the terminals at 0 mA.
+    ///
+    /// The lag is also what an older note here put down to the two being
+    /// separate samples: during a compile, 46.51 W arriving against a 32.77 W
+    /// load implied 13.74 W into the cell while the terminals read 30.9 W. On
+    /// a quiet machine the two tie out — 45.9 W in less 6.84 W consumed is
+    /// 39.06 W, against 12.370 V x 3.183 A = 39.4 W at the pack — and on the
+    /// BMW's rear port, a steady 15 W supply, the capture has 4.62 W computed
+    /// against 4.11 W at the terminals — a half watt that is presumably the
+    /// charger's own conversion loss, and is not charge the cell receives.
+    /// Those two are the only charging figures there are: charging has not
+    /// been watched second by second with this in place, because the Mac it
+    /// was written on sat at its charge limit throughout.
+    ///
+    /// Only the SMC's own terminal reading counts. The registry's copy of
+    /// voltage and current is 10–30 s stale, which is a lag of its own. Off a
+    /// charger nothing changes: the input is zero, there is nothing for the
+    /// load to lag behind, and the flow is minus the load.
+    static func batteryWatts(
+        computed: Double?, externalConnected: Bool, terminals: SMCMonitor.BatteryReading
+    ) -> Double? {
+        guard externalConnected, let watts = terminals.watts else { return computed }
+        return watts
     }
 
     /// Replaces an input rail that has not caught up yet with the contract the
