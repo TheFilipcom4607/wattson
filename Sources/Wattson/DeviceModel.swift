@@ -204,6 +204,10 @@ final class DeviceModel: ObservableObject {
     @Published var titleMode: TitleMode {
         didSet { UserDefaults.standard.set(titleMode.rawValue, forKey: Self.titleModeKey) }
     }
+    /// Off leaves the reading on its own, for anyone who keeps the system's
+    /// battery item and wants Wattson to be just the number beside it. On by
+    /// default, so nobody's menu bar changes under them with an update.
+    @Published var showMenuBarIcon: Bool { didSet { save(showMenuBarIcon, "showMenuBarIcon") } }
 
     // Which sections of the panel are shown.
     @Published var showSparkline: Bool { didSet { save(showSparkline, "showSparkline") } }
@@ -288,6 +292,7 @@ final class DeviceModel: ObservableObject {
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.titleModeKey) ?? ""
         titleMode = TitleMode(rawValue: stored) ?? .livePower
+        showMenuBarIcon = Self.flag("showMenuBarIcon")
         showSparkline = Self.flag("showSparkline")
         showCable = Self.flag("showCable")
         showPortLimits = Self.flag("showPortLimits")
@@ -411,6 +416,38 @@ final class DeviceModel: ObservableObject {
         }
     }
 
+    /// The widest strings a mode puts up in ordinary use, for the menu bar to
+    /// hold room for.
+    ///
+    /// Monospaced digits stopped 9.81 W and 9.86 W being different widths, but
+    /// not 9.8 W and 10.2 W, or a sign appearing — and the item resizing moves
+    /// everything to the left of it. Every digit is the same width in that
+    /// font, so an 8 stands for any of them.
+    ///
+    /// Deliberately the common case rather than the theoretical widest. A
+    /// three-digit input only happens on a charger offering 100 W or more, so
+    /// the charger's own offer decides that; otherwise room for 100 W would be
+    /// a permanent gap on every Mac on a 30 W brick. Anything wider than the
+    /// template still fits — the item grows to it and stays grown, so it moves
+    /// once rather than every time a reading crosses the line.
+    func titleTemplates(for mode: TitleMode) -> [String] {
+        let plugged = power.externalConnected
+        let wide = (power.adapterWatts ?? 0) >= 99.995
+        switch mode {
+        case .iconOnly: return []
+        case .livePower: return [plugged ? (wide ? "888.88 W" : "88.88 W") : "-88.88 W"]
+        case .batteryFlow: return ["+88.88 W", "-88.88 W"]
+        case .batteryLevel: return ["100%"]
+        case .batteryLevelFlow: return ["100% +88.8 W", "100% -88.8 W"]
+        case .batteryLevelPower:
+            guard power.batteryPercent != nil else { return titleTemplates(for: .livePower) }
+            return [plugged ? (wide ? "100% 888.8 W" : "100% 88.8 W") : "100% -88.8 W"]
+        case .deviceCount: return ["8 Devices"]
+        case .fastestLink: return ["888 Mbps"]
+        case .adapterRating: return [plugged ? "888 W" : "No charger"]
+        }
+    }
+
     /// Match the panel exactly: if it reads 2.34 W, so does the menu bar.
     private func format(_ watts: Double) -> String {
         String(format: "%.2f W", watts)
@@ -498,8 +535,11 @@ final class DeviceModel: ObservableObject {
     /// the item can stand in for the system's own battery in the menu bar. The
     /// two modes that are about what is plugged in rather than about power keep
     /// their connector.
-    var menuBarIcon: MenuBarIcon {
-        switch titleMode {
+    var menuBarIcon: MenuBarIcon { menuBarIcon(for: titleMode) }
+
+    /// Broken out from `menuBarIcon` so Settings can preview it beside each mode.
+    func menuBarIcon(for mode: TitleMode) -> MenuBarIcon {
+        switch mode {
         case .deviceCount, .fastestLink:
             return .symbol("cable.connector")
         case .adapterRating where power.externalConnected:
@@ -511,6 +551,12 @@ final class DeviceModel: ObservableObject {
             }
             return .battery(percent: percent, charging: isCharging, lowPower: isLowPowerOn)
         }
+    }
+
+    /// Icon-only keeps its icon whatever the switch says: with nothing else to
+    /// show, turning it off would leave an empty, unclickable gap.
+    func drawsIcon(for mode: TitleMode) -> Bool {
+        showMenuBarIcon || title(for: mode) == nil
     }
 
     /// Low Power Mode as it applies right now, which is what the icon colours

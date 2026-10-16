@@ -52,12 +52,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     /// What the button's image is currently drawn from.
     private var shownIcon: MenuBarIcon?
+    /// The width the title is held to, and what it was measured for. See
+    /// `holdWidth`.
+    private var heldWidth: (key: String, width: CGFloat)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-        // Monospaced digits stop the item resizing every time the wattage ticks.
+        // Monospaced digits stop the item resizing every time a digit changes;
+        // `holdWidth` covers the digit count and the sign.
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
 
         // objectWillChange fires *before* the value changes, so hop a runloop
@@ -151,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The battery is drawn rather than looked up, and this runs on every
         // power tick, so redraw only when the picture would actually differ.
-        let icon = model.menuBarIcon
+        let icon = model.drawsIcon(for: model.titleMode) ? model.menuBarIcon : nil
         if icon != shownIcon {
             shownIcon = icon
             switch icon {
@@ -162,16 +166,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .symbol(let name):
                 button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Wattson")
                 button.image?.isTemplate = true
+            case nil:
+                button.image = nil
             }
         }
 
         if let title = model.titleText {
-            button.title = " " + title
-            button.imagePosition = .imageLeading
+            // The space is what separates the text from the icon; on its own it
+            // would only be a gap at the start.
+            button.title = icon == nil ? title : " " + title
+            button.imagePosition = icon == nil ? .noImage : .imageLeading
         } else {
             button.title = ""
             button.imagePosition = .imageOnly
         }
+        holdWidth(button)
+    }
+
+    /// Keeps the item one width while the reading changes underneath it.
+    ///
+    /// A variable-length item sizes itself to its contents, so going from
+    /// 9.8 W to 10.2 W, or the sign appearing, nudged every item to its left.
+    /// Fixing the item's length was tried first and only half worked: the
+    /// button centres its contents in whatever length it is given, whatever its
+    /// `alignment` says, so the neighbours held still while the battery slid a
+    /// pixel or two inside the item each time a sign came or went. So it is the
+    /// text that is held to one width instead — the reading, followed by
+    /// however much space makes it as wide as the mode's widest ordinary
+    /// string. With contents that never change width, nothing can move.
+    ///
+    /// Measured again only when what it was measured for changes — the mode,
+    /// the icon, or the charger coming and going, which changes what the mode
+    /// can say. Between those it only ever grows: a reading wider than the
+    /// templates widens the item once and keeps it there, rather than letting
+    /// it move each time a reading crosses back.
+    private func holdWidth(_ button: NSStatusBarButton) {
+        let shown = button.title
+        guard model.titleText != nil, let font = button.font, let last = shown.indices.last else {
+            heldWidth = nil
+            return
+        }
+        func width(_ text: String) -> CGFloat {
+            (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        let key = [
+            model.titleMode.rawValue,
+            "\(model.power.externalConnected)",
+            "\((model.power.adapterWatts ?? 0) >= 99.995)",
+            button.image.map { "\($0.size.width)" } ?? "-",
+        ].joined(separator: " ")
+        let prefix = button.image == nil ? "" : " "
+        let templates = heldWidth?.key == key
+            ? [heldWidth?.width ?? 0]
+            : model.titleTemplates(for: model.titleMode).map { width(prefix + $0) }
+        let held = max(width(shown), templates.max() ?? 0)
+        heldWidth = (key, held)
+
+        // Kerning after the last character is space that belongs to the text,
+        // so it counts towards the button's size like any other.
+        let padding = held - width(shown)
+        guard padding > 0.01 else { return }
+        let title = NSMutableAttributedString(string: shown, attributes: [.font: font])
+        title.addAttribute(.kern, value: padding, range: NSRange(last..<shown.endIndex, in: shown))
+        button.attributedTitle = title
     }
 
     @objc private func togglePopover() {

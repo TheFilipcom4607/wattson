@@ -80,12 +80,20 @@ struct SettingsView: View {
             // the labels alone did not tell you what you would get.
             Picker("Show", selection: $model.titleMode) {
                 ForEach(TitleMode.allCases) { mode in
-                    (Text(mode.label) + Text(preview(mode)).foregroundColor(.secondary))
+                    (Text(mode.label) + preview(mode))
                         .tag(mode)
                 }
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
+
+            // Greyed out rather than hidden under icon-only, which keeps its
+            // icon regardless: it is still the setting every other mode will
+            // come back to.
+            plain {
+                Toggle("Show the icon beside the reading", isOn: $model.showMenuBarIcon)
+                    .disabled(model.title(for: model.titleMode) == nil)
+            }
 
             // Because the previews are live, they are also only as
             // distinguishing as the moment you are reading them in. On battery
@@ -249,11 +257,33 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    /// Nothing at all for icon-only, rather than the words "icon only" sitting
-    /// in the preview column where every other row shows a live reading. It
-    /// read as a value the mode produces, which is the one thing it is not.
-    private func preview(_ mode: TitleMode) -> String {
-        model.title(for: mode).map { "   " + $0 } ?? ""
+    /// Icon and reading, as the menu bar would show them, so switching the
+    /// icon off is visible here too. Icon-only gets just its icon, rather than
+    /// the words "icon only" sitting in the preview column where every other
+    /// row shows a live reading: it read as a value the mode produces, which is
+    /// the one thing it is not.
+    private func preview(_ mode: TitleMode) -> Text {
+        var preview = Text("   ")
+        if model.drawsIcon(for: mode) {
+            preview = preview + Text(icon(model.menuBarIcon(for: mode)))
+                .baselineOffset(-1)
+            if model.title(for: mode) != nil { preview = preview + Text(" ") }
+        }
+        if let title = model.title(for: mode) {
+            preview = preview + Text(title)
+        }
+        return preview.foregroundColor(.secondary)
+    }
+
+    private func icon(_ icon: MenuBarIcon) -> Image {
+        switch icon {
+        case .battery(let percent, let charging, let lowPower):
+            return Image(nsImage: BatteryGlyph.menuBarImage(
+                percent: percent, charging: charging, lowPower: lowPower
+            ))
+        case .symbol(let name):
+            return Image(systemName: name)
+        }
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
