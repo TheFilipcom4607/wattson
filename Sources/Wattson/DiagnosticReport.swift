@@ -69,9 +69,11 @@ enum DiagnosticReport {
 
         // PortMonitor: the full controller trees include Power Delivery children,
         // active transports, pin configuration, and e-marker nodes.
-        rawSection("IOREG — AppleHPMInterface (PortMonitor source)",
+        // Matched by the same class the reader uses, so a Mac whose ports the
+        // reader cannot see is also a Mac whose capture shows why.
+        rawSection("IOREG — \(PortMonitor.portClass) (PortMonitor source)",
                    command: "/usr/sbin/ioreg",
-                   arguments: ["-l", "-w", "0", "-r", "-c", "AppleHPMInterface"], into: &report)
+                   arguments: ["-l", "-w", "0", "-r", "-c", PortMonitor.portClass], into: &report)
         rawSection("IOREG — IOPortTransportComponentCCUSBPDSOPp (e-marker source)",
                    command: "/usr/sbin/ioreg",
                    arguments: ["-l", "-w", "0", "-r", "-c", "IOPortTransportComponentCCUSBPDSOPp"],

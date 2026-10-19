@@ -485,9 +485,16 @@ final class DeviceModel: ObservableObject {
     /// brick too small for it is discharging, and there is no time-to-full for
     /// a pack that is going down. Keying this on `externalConnected` meant that
     /// machine — the one this app exists for — got no estimate at all.
+    ///
+    /// The charging estimate is the gauge's time to 100%, and says so. It used
+    /// to read "until full", which on a Mac with a charge limit promised a
+    /// time the pack would never reach (#3: an M2 Pro capped at 80%). Stopping
+    /// at the limit instead needs the limit, and macOS publishes it nowhere
+    /// readable — see `ChargingHold.summary`. Naming the figure's real end
+    /// point is the most that can honestly be done with it.
     var batteryRuntimeSummary: String? {
         if isCharging, let minutes = power.minutesToFull, minutes > 0 {
-            return Self.duration(minutes) + " until full"
+            return Self.duration(minutes) + " to 100%"
         }
         if !isCharging, let minutes = power.minutesToEmpty, minutes > 0 {
             return Self.duration(minutes) + " left"

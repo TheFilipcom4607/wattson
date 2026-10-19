@@ -693,11 +693,24 @@ enum TransportName {
 /// Reads Apple's USB-C port controller (AppleHPM) out of the IORegistry.
 enum PortMonitor {
 
+    /// The class every USB-C and MagSafe port node conforms to, on every Apple
+    /// silicon generation.
+    ///
+    /// This used to be `AppleHPMInterface`, which is the superclass on M3 and
+    /// later (`AppleHPMInterfaceType10/11` here) and nothing at all on M1 and
+    /// M2, whose ports are `AppleTCControllerType10/11` and descend from
+    /// `IOPort` by another route. An M2 Pro reported every reader answering
+    /// except this one: four PHYs, four controllers, four SMC rails, zero
+    /// ports (#3). The class names come from whatcable's corpus, which reaches
+    /// M1 and M2; matching `IOPort` on this Mac returns exactly the three nodes
+    /// `AppleHPMInterface` did. Anything else that conforms is dropped by the
+    /// `Port-` and USB-C/MagSafe checks in `read()`.
+    static let portClass = "IOPort"
+
     static func read() -> [PortInfo] {
         var iterator: io_iterator_t = 0
-        // AppleHPMInterface is the shared superclass of the USB-C and MagSafe ports.
         guard IOServiceGetMatchingServices(
-            kIOMainPortDefault, IOServiceMatching("AppleHPMInterface"), &iterator
+            kIOMainPortDefault, IOServiceMatching(portClass), &iterator
         ) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
 
@@ -712,12 +725,16 @@ enum PortMonitor {
         while case let service = IOIteratorNext(iterator), service != 0 {
             defer { IOObjectRelease(service) }
             guard let properties = properties(of: service),
-                  let description = properties["PortDescription"] as? String
+                  let description = properties["PortDescription"] as? String,
+                  description.hasPrefix("Port-")
             else { continue }
 
             let number = (properties["PortNumber"] as? NSNumber)?.intValue
             let kind: PortInfo.Kind = description.contains("USB-C") ? .usbC
                 : description.contains("MagSafe") ? .magSafe : .other
+            // Matching the superclass is what lets M1 and M2 ports in; this is
+            // what keeps anything else `IOPort` covers out.
+            guard kind != .other else { continue }
             var port = PortInfo(
                 name: displayName(description),
                 kind: kind,

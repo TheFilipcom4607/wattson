@@ -21,7 +21,11 @@ enum HealthCheck {
         func present(_ value: Any?) -> String { value == nil ? "none" : "ok" }
 
         let os = ProcessInfo.processInfo.operatingSystemVersion
-        print("WATTSON HEALTH CHECK")
+        // The version heads the report because a pasted health check is often
+        // all a bug report contains, and without it there is no telling which
+        // fixes the machine already had. "—" from a bare `swift build`, which
+        // has no Info.plist to read.
+        print("WATTSON HEALTH CHECK · Wattson \(Bundle.main.shortVersion)")
         print("macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · \(MacModel.identifier)")
         print("\"none\" is expected for anything that needs something plugged in. Compare two")
         print("runs taken with the same setup; a line that changes is what to look at.")
@@ -110,7 +114,11 @@ enum HealthCheck {
             say("ioreport.cpuSpeedReader", "ok")
             _ = reader.read()
             Thread.sleep(forTimeInterval: 1)
-            let clusters = reader.read()?.filter(\.isMeaningful) ?? []
+            // Every cluster that answered, busy or not. Filtering on
+            // `isMeaningful` made this a measure of how idle the machine was:
+            // an M2 Pro reported 0 (#3), and that could not say whether its
+            // channels failed to match the ladder or its cores were asleep.
+            let clusters = reader.read() ?? []
             say("ioreport.clusters", "\(clusters.count)")
         } else {
             say("ioreport.cpuSpeedReader", "none")

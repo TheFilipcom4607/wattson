@@ -135,7 +135,7 @@ enum Entry {
             print("Runs for:    \(minutes / 60) h \(minutes % 60) min at the current draw")
         }
         if let minutes = power.minutesToFull {
-            print("Full in:     \(minutes / 60) h \(minutes % 60) min")
+            print("100% in:     \(minutes / 60) h \(minutes % 60) min")
         }
         let health = power.health
         if health.hasAnything {
