@@ -4,9 +4,9 @@
 <h1>Wattson</h1>
 
 <p>
-  <strong>A menu bar battery that says what it is actually doing.<br>
-  Then keeps going: where every watt lands, and what is on the<br>
-  other end of each USB-C cable.</strong>
+  <strong>A free Mac menu bar app that shows what your MacBook battery<br>
+  is really doing: power use in watts, where every watt goes,<br>
+  and what's plugged into each USB-C port.</strong>
 </p>
 
 <p>
